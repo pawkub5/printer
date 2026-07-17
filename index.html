@@ -1,41 +1,51 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Print from Anywhere</title>
+    <title>Thermal Printer Web App</title>
+    <style>
+        body { font-family: Arial, sans-serif; text-align: center; margin: 40px; background-color: #f4f4f9; }
+        .container { max-width: 600px; margin: auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); }
+        button, input { margin: 10px 0; padding: 10px; font-size: 16px; cursor: pointer; }
+        #sendButton { background-color: #28a745; color: white; border: none; border-radius: 5px; display: none; width: 100%;}
+        #sendButton:hover { background-color: #218838; }
+        #previewCanvas { border: 1px dashed #ccc; margin-top: 15px; max-width: 100%; height: auto; image-rendering: pixelated; }
+        #status { font-weight: bold; color: #333; margin-top: 15px; }
+    </style>
+
+    <!-- Firebase SDKs -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
         import { getDatabase, ref, set } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js";
 
-        // ADD YOUR FIREBASE URL HERE (keep the quotes)
+        // --- PASTE YOUR FIREBASE URL HERE ---
         const firebaseConfig = {
-            databaseURL: "https://printer-fd73c-default-rtdb.firebaseio.com/" 
+            databaseURL: "YOUR_FIREBASE_DATABASE_URL" 
         };
         const app = initializeApp(firebaseConfig);
         const db = getDatabase(app);
 
-        document.getElementById('imageInput').addEventListener('change', handleImage);
+        let base64Payload = ""; // Stores the final printer data
 
-        function handleImage(e) {
+        // 1. Listen for file selection
+        document.getElementById('imageInput').addEventListener('change', function(e) {
             const file = e.target.files[0];
-            const reader = new FileReader();
+            if (!file) return;
             
+            const reader = new FileReader();
             reader.onload = function(event) {
                 const img = new Image();
-                img.onload = function() {
-                    processAndSendToFirebase(img);
-                }
+                img.onload = function() { processImage(img); }
                 img.src = event.target.result;
             }
             reader.readAsDataURL(file);
-        }
+        });
 
-        function processAndSendToFirebase(img) {
-            document.getElementById('status').innerText = "Processing image...";
-            
-            const canvas = document.createElement('canvas');
+        // 2. Process the image and generate the preview
+        function processImage(img) {
+            const canvas = document.getElementById('previewCanvas');
             const ctx = canvas.getContext('2d');
             
-            // Force width to 384 (standard 58mm printer width)
+            // Standard 58mm printer width
             const printWidth = 384; 
             const scale = printWidth / img.width;
             const printHeight = Math.floor(img.height * scale);
@@ -43,56 +53,85 @@
             canvas.width = printWidth;
             canvas.height = printHeight;
             
-            // Draw and get pixel data
+            // Draw original image to canvas
             ctx.drawImage(img, 0, 0, printWidth, printHeight);
             const imageData = ctx.getImageData(0, 0, printWidth, printHeight);
             const pixels = imageData.data;
 
             // ESC/POS Command: GS v 0 (Print Raster Image)
             let escpos = [0x1D, 0x76, 0x30, 0x00]; 
-            
-            let xBytes = printWidth / 8; // 48 bytes across
-            escpos.push(xBytes % 256, Math.floor(xBytes / 256)); // Width
-            escpos.push(printHeight % 256, Math.floor(printHeight / 256)); // Height
+            let xBytes = printWidth / 8;
+            escpos.push(xBytes % 256, Math.floor(xBytes / 256));
+            escpos.push(printHeight % 256, Math.floor(printHeight / 256));
 
-            // Convert to 1-bit black and white and pack into bytes
+            // Convert to Black & White and pack into bytes
             for (let y = 0; y < printHeight; y++) {
                 for (let x = 0; x < printWidth; x += 8) {
                     let byte = 0;
                     for (let bit = 0; bit < 8; bit++) {
                         let i = ((y * printWidth) + (x + bit)) * 4;
-                        // Simple threshold: if pixel is dark, set bit to 1 (print black)
+                        // Calculate brightness
                         let brightness = (pixels[i] + pixels[i+1] + pixels[i+2]) / 3;
+                        
+                        // Threshold: If dark, turn black. If light, turn white.
                         if (brightness < 128) {
-                            byte |= (1 << (7 - bit));
+                            byte |= (1 << (7 - bit)); // Set bit for printer (1 = print black dot)
+                            // Update canvas pixel to pure black so you can see the result
+                            pixels[i] = pixels[i+1] = pixels[i+2] = 0; 
+                        } else {
+                            // Update canvas pixel to pure white
+                            pixels[i] = pixels[i+1] = pixels[i+2] = 255;
                         }
                     }
                     escpos.push(byte);
                 }
             }
 
-            // Convert byte array to Base64 safely
+            // Put the black and white image back onto the screen for you to review
+            ctx.putImageData(imageData, 0, 0);
+
+            // Convert raw bytes to Base64
             let binary = '';
             const bytes = new Uint8Array(escpos);
-            const len = bytes.byteLength;
-            for (let i = 0; i < len; i++) {
+            for (let i = 0; i < bytes.byteLength; i++) {
                 binary += String.fromCharCode(bytes[i]);
             }
-            const base64Data = window.btoa(binary);
+            base64Payload = window.btoa(binary);
 
-            // Send to Firebase
+            // Show the send button
+            document.getElementById('sendButton').style.display = 'block';
+            document.getElementById('status').innerText = "Preview generated. Ready to send!";
+        }
+
+        // 3. Send to Firebase when button is clicked
+        document.getElementById('sendButton').addEventListener('click', function() {
             document.getElementById('status').innerText = "Sending to Cloud...";
-            set(ref(db, 'Print_Queue'), base64Data).then(() => {
-                document.getElementById('status').innerText = "Sent successfully! Printer should start soon.";
+            this.disabled = true; // Prevent double clicking
+
+            set(ref(db, 'Print_Queue'), base64Payload).then(() => {
+                document.getElementById('status').innerText = "Success! Data is in the cloud.";
+                document.getElementById('status').style.color = "green";
+                this.disabled = false;
             }).catch((error) => {
                 document.getElementById('status').innerText = "Error: " + error;
+                document.getElementById('status').style.color = "red";
+                this.disabled = false;
             });
-        }
+        });
     </script>
 </head>
-<body style="font-family: sans-serif; text-align: center; margin-top: 50px;">
-    <h2>Send Image to Printer</h2>
-    <input type="file" id="imageInput" accept="image/*" />
-    <p id="status" style="font-weight: bold; color: blue;"></p>
+<body>
+    <div class="container">
+        <h2>Global Thermal Printer</h2>
+        <p>1. Select an image. 2. Verify the B&W preview. 3. Send to ESP32.</p>
+        
+        <input type="file" id="imageInput" accept="image/*" />
+        
+        <!-- This canvas shows you exactly what the printer will spit out -->
+        <canvas id="previewCanvas"></canvas>
+        
+        <button id="sendButton">Send to Printer</button>
+        <p id="status"></p>
+    </div>
 </body>
 </html>
