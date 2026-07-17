@@ -8,44 +8,39 @@
         button, input { margin: 10px 0; padding: 10px; font-size: 16px; cursor: pointer; }
         #sendButton { background-color: #28a745; color: white; border: none; border-radius: 5px; display: none; width: 100%;}
         #sendButton:hover { background-color: #218838; }
-        #previewCanvas { border: 1px dashed #ccc; margin-top: 15px; max-width: 100%; height: auto; image-rendering: pixelated; }
+        #previewCanvas { border: 1px dashed #ccc; margin-top: 15px; max-width: 100%; height: auto; image-rendering: auto; }
         #status { font-weight: bold; color: #333; margin-top: 15px; }
     </style>
 
-    <!-- Firebase SDKs -->
-    <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
-        import { getDatabase, ref, set } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js";
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-database-compat.js"></script>
 
-        // --- PASTE YOUR FIREBASE URL HERE ---
-        const firebaseConfig = {
-            databaseURL: "YOUR_FIREBASE_DATABASE_URL" 
+    <script>
+        let base64Payload = ""; 
+
+        window.onload = function() {
+            document.getElementById('imageInput').addEventListener('change', function(e) {
+                const file = e.target.files[0];
+                if (!file) return;
+                
+                const reader = new FileReader();
+                reader.onload = function(event) {
+                    const img = new Image();
+                    img.onload = function() { processImage(img); }
+                    img.src = event.target.result;
+                }
+                reader.readAsDataURL(file);
+            });
+
+            document.getElementById('sendButton').addEventListener('click', function() {
+                sendToFirebase();
+            });
         };
-        const app = initializeApp(firebaseConfig);
-        const db = getDatabase(app);
 
-        let base64Payload = ""; // Stores the final printer data
-
-        // 1. Listen for file selection
-        document.getElementById('imageInput').addEventListener('change', function(e) {
-            const file = e.target.files[0];
-            if (!file) return;
-            
-            const reader = new FileReader();
-            reader.onload = function(event) {
-                const img = new Image();
-                img.onload = function() { processImage(img); }
-                img.src = event.target.result;
-            }
-            reader.readAsDataURL(file);
-        });
-
-        // 2. Process the image and generate the preview
         function processImage(img) {
             const canvas = document.getElementById('previewCanvas');
             const ctx = canvas.getContext('2d');
             
-            // Standard 58mm printer width
             const printWidth = 384; 
             const scale = printWidth / img.width;
             const printHeight = Math.floor(img.height * scale);
@@ -53,44 +48,80 @@
             canvas.width = printWidth;
             canvas.height = printHeight;
             
-            // Draw original image to canvas
+            // Draw original image
             ctx.drawImage(img, 0, 0, printWidth, printHeight);
             const imageData = ctx.getImageData(0, 0, printWidth, printHeight);
             const pixels = imageData.data;
 
-            // ESC/POS Command: GS v 0 (Print Raster Image)
+            // 1. Convert image to a grayscale array using actual luminance
+            let grayPixels = new Float32Array(printWidth * printHeight);
+            for (let i = 0; i < pixels.length; i += 4) {
+                let pixelIndex = i / 4;
+                grayPixels[pixelIndex] = (pixels[i] * 0.299) + (pixels[i+1] * 0.587) + (pixels[i+2] * 0.114);
+            }
+
+            // 2. Apply Floyd-Steinberg Dithering
+            for (let y = 0; y < printHeight; y++) {
+                for (let x = 0; x < printWidth; x++) {
+                    let idx = y * printWidth + x;
+                    let oldPixel = grayPixels[idx];
+                    
+                    // Threshold at 128 (middle gray)
+                    let newPixel = oldPixel < 128 ? 0 : 255; 
+                    grayPixels[idx] = newPixel;
+                    
+                    // Calculate the error
+                    let quantError = oldPixel - newPixel;
+
+                    // Distribute the error to neighboring pixels
+                    if (x + 1 < printWidth) {
+                        grayPixels[idx + 1] += quantError * 7 / 16;
+                    }
+                    if (x - 1 >= 0 && y + 1 < printHeight) {
+                        grayPixels[idx - 1 + printWidth] += quantError * 3 / 16;
+                    }
+                    if (y + 1 < printHeight) {
+                        grayPixels[idx + printWidth] += quantError * 5 / 16;
+                    }
+                    if (x + 1 < printWidth && y + 1 < printHeight) {
+                        grayPixels[idx + 1 + printWidth] += quantError * 1 / 16;
+                    }
+                }
+            }
+
+            // 3. Pack into ESC/POS bytes and update Canvas
             let escpos = [0x1D, 0x76, 0x30, 0x00]; 
             let xBytes = printWidth / 8;
             escpos.push(xBytes % 256, Math.floor(xBytes / 256));
             escpos.push(printHeight % 256, Math.floor(printHeight / 256));
 
-            // Convert to Black & White and pack into bytes
             for (let y = 0; y < printHeight; y++) {
                 for (let x = 0; x < printWidth; x += 8) {
                     let byte = 0;
                     for (let bit = 0; bit < 8; bit++) {
-                        let i = ((y * printWidth) + (x + bit)) * 4;
-                        // Calculate brightness
-                        let brightness = (pixels[i] + pixels[i+1] + pixels[i+2]) / 3;
-                        
-                        // Threshold: If dark, turn black. If light, turn white.
-                        if (brightness < 128) {
-                            byte |= (1 << (7 - bit)); // Set bit for printer (1 = print black dot)
-                            // Update canvas pixel to pure black so you can see the result
-                            pixels[i] = pixels[i+1] = pixels[i+2] = 0; 
-                        } else {
-                            // Update canvas pixel to pure white
-                            pixels[i] = pixels[i+1] = pixels[i+2] = 255;
+                        let idx = y * printWidth + (x + bit);
+                        let bwColor = grayPixels[idx]; // It is now strictly 0 or 255
+
+                        // Update Canvas for the preview
+                        let pIdx = idx * 4;
+                        pixels[pIdx] = bwColor;       // R
+                        pixels[pIdx+1] = bwColor;     // G
+                        pixels[pIdx+2] = bwColor;     // B
+                        pixels[pIdx+3] = 255;         // Alpha (fully opaque)
+
+                        // If pixel is black (0), set the bit for the printer
+                        if (bwColor === 0) {
+                            byte |= (1 << (7 - bit)); 
                         }
                     }
                     escpos.push(byte);
                 }
             }
 
-            // Put the black and white image back onto the screen for you to review
+            // Put the dithered image onto the screen
             ctx.putImageData(imageData, 0, 0);
 
-            // Convert raw bytes to Base64
+            // Convert to Base64 for database
             let binary = '';
             const bytes = new Uint8Array(escpos);
             for (let i = 0; i < bytes.byteLength; i++) {
@@ -98,36 +129,51 @@
             }
             base64Payload = window.btoa(binary);
 
-            // Show the send button
             document.getElementById('sendButton').style.display = 'block';
-            document.getElementById('status').innerText = "Preview generated. Ready to send!";
+            document.getElementById('status').innerText = "Dithered preview generated. Ready to send!";
         }
 
-        // 3. Send to Firebase when button is clicked
-        document.getElementById('sendButton').addEventListener('click', function() {
-            document.getElementById('status').innerText = "Sending to Cloud...";
-            this.disabled = true; // Prevent double clicking
+        function sendToFirebase() {
+            const statusText = document.getElementById('status');
+            const sendBtn = document.getElementById('sendButton');
+            
+            // --- PASTE YOUR FIREBASE URL HERE ---
+            const firebaseConfig = {
+                databaseURL: "YOUR_FIREBASE_DATABASE_URL" 
+            };
 
-            set(ref(db, 'Print_Queue'), base64Payload).then(() => {
-                document.getElementById('status').innerText = "Success! Data is in the cloud.";
-                document.getElementById('status').style.color = "green";
-                this.disabled = false;
-            }).catch((error) => {
-                document.getElementById('status').innerText = "Error: " + error;
-                document.getElementById('status').style.color = "red";
-                this.disabled = false;
-            });
-        });
+            try {
+                if (!firebase.apps.length) {
+                    firebase.initializeApp(firebaseConfig);
+                }
+                const db = firebase.database();
+                
+                statusText.innerText = "Sending to Cloud...";
+                sendBtn.disabled = true; 
+
+                db.ref('Print_Queue').set(base64Payload).then(() => {
+                    statusText.innerText = "Success! Data is in the cloud.";
+                    statusText.style.color = "green";
+                    sendBtn.disabled = false;
+                }).catch((error) => {
+                    statusText.innerText = "Firebase Error: " + error.message;
+                    statusText.style.color = "red";
+                    sendBtn.disabled = false;
+                });
+            } catch (err) {
+                statusText.innerText = "Setup Error: Did you paste your Firebase URL?";
+                statusText.style.color = "red";
+            }
+        }
     </script>
 </head>
 <body>
     <div class="container">
         <h2>Global Thermal Printer</h2>
-        <p>1. Select an image. 2. Verify the B&W preview. 3. Send to ESP32.</p>
+        <p>1. Select an image. 2. Verify the dithered preview. 3. Send to ESP32.</p>
         
         <input type="file" id="imageInput" accept="image/*" />
         
-        <!-- This canvas shows you exactly what the printer will spit out -->
         <canvas id="previewCanvas"></canvas>
         
         <button id="sendButton">Send to Printer</button>
