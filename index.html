@@ -134,37 +134,54 @@
         }
 
         function sendToFirebase() {
-            const statusText = document.getElementById('status');
-            const sendBtn = document.getElementById('sendButton');
+    const statusText = document.getElementById('status');
+    const sendBtn = document.getElementById('sendButton');
+    
+    const firebaseConfig = {
+        databaseURL: "https://printer-fd73c-default-rtdb.firebaseio.com/" 
+    };
+
+    if (!firebase.apps.length) {
+        firebase.initializeApp(firebaseConfig);
+    }
+    
+    const db = firebase.database();
+    const auth = firebase.auth();
+
+    statusText.innerText = "Authenticating and checking printer status...";
+    sendBtn.disabled = true; 
+
+    // 1. Sign in anonymously
+    auth.signInAnonymously().then((userCredential) => {
+        const uid = userCredential.user.uid;
+
+        // 2. Try to write the print job to 'Current_Job'
+        db.ref('Current_Job').set(base64Payload)
+        .then(() => {
+            // 3. If successful, update the user's cooldown timestamp
+            db.ref('users/' + uid + '/lastPrint').set(firebase.database.ServerValue.TIMESTAMP);
             
-            // --- PASTE YOUR FIREBASE URL HERE ---
-            const firebaseConfig = {
-                databaseURL: "https://printer-fd73c-default-rtdb.firebaseio.com/" 
-            };
-
-            try {
-                if (!firebase.apps.length) {
-                    firebase.initializeApp(firebaseConfig);
-                }
-                const db = firebase.database();
-                
-                statusText.innerText = "Sending to Cloud...";
-                sendBtn.disabled = true; 
-
-                db.ref('Print_Queue').set(base64Payload).then(() => {
-                    statusText.innerText = "Success! Data is in the cloud.";
-                    statusText.style.color = "green";
-                    sendBtn.disabled = false;
-                }).catch((error) => {
-                    statusText.innerText = "Firebase Error: " + error.message;
-                    statusText.style.color = "red";
-                    sendBtn.disabled = false;
-                });
-            } catch (err) {
-                statusText.innerText = "Setup Error: Did you paste your Firebase URL?";
-                statusText.style.color = "red";
+            statusText.innerText = "Success! Image sent to printer.";
+            statusText.style.color = "green";
+        })
+        .catch((error) => {
+            // If the Firebase Rules reject the write, it ends up here
+            if (error.message.includes("permission_denied")) {
+                statusText.innerText = "Printer is busy or you are on cooldown (Wait 1 min).";
+            } else {
+                statusText.innerText = "Error: " + error.message;
             }
-        }
+            statusText.style.color = "red";
+            sendBtn.disabled = false;
+        });
+
+    }).catch((error) => {
+        statusText.innerText = "Auth Error: " + error.message;
+        statusText.style.color = "red";
+        sendBtn.disabled = false;
+    });
+}
+
     </script>
 </head>
 <body>
