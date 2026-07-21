@@ -127,7 +127,7 @@
         }
 
         .preview-wrapper {
-            display: none; /* Hidden by default */
+            display: none; /* Hidden until image is processed */
             flex-direction: column;
             gap: 8px;
             margin-top: 12px;
@@ -147,6 +147,7 @@
             border-radius: 4px;
             background: white;
             box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+            image-rendering: pixelated; /* Keeps the B&W preview crisp */
         }
 
         .btn-primary {
@@ -178,213 +179,14 @@
             font-size: 0.875rem;
             font-weight: 600;
             min-height: 20px;
+            padding: 8px;
+            border-radius: 4px;
         }
         
-        .status-success { color: #10B981; }
-        .status-error { color: #EF4444; }
-        .status-processing { color: var(--primary); }
+        .status-success { color: #065f46; background-color: #d1fae5; }
+        .status-error { color: #991b1b; background-color: #fee2e2; }
+        .status-processing { color: var(--primary); background-color: #e0e7ff; }
     </style>
-
-    <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
-        import { getDatabase, ref, set } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js";
-
-        // ADD YOUR FIREBASE URL HERE
-        const firebaseConfig = {
-            databaseURL: "https://printer-fd73c-default-rtdb.firebaseio.com/" 
-        };
-        const app = initializeApp(firebaseConfig);
-        const db = getDatabase(app);
-
-        const printBtn = document.getElementById('printBtn');
-        const statusEl = document.getElementById('status');
-        const imageInput = document.getElementById('imageInput');
-        const fileNameDisplay = document.getElementById('fileName');
-        const noteInput = document.getElementById('noteInput');
-        const charCount = document.getElementById('charCount');
-        
-        const previewWrapper = document.getElementById('previewWrapper');
-        const previewCanvas = document.getElementById('previewCanvas');
-        const ctx = previewCanvas.getContext('2d');
-
-        const MAX_FILE_SIZE = 15 * 1024 * 1024; // 15 MB
-        let cachedImageBytes = null; // Stores ESC/POS bytes so we don't process twice
-
-        // Character counter update
-        noteInput.addEventListener('input', (e) => {
-            charCount.innerText = `${e.target.value.length} / 300`;
-        });
-
-        // Handle file selection, validation, and preview generation
-        imageInput.addEventListener('change', async (e) => {
-            const file = e.target.files[0];
-            
-            // Reset state
-            cachedImageBytes = null;
-            previewWrapper.style.display = 'none';
-            setStatus("", "");
-
-            if (!file) {
-                fileNameDisplay.innerText = "Click to select an image";
-                return;
-            }
-
-            if (file.size > MAX_FILE_SIZE) {
-                setStatus("File too large. Maximum size is 15MB.", "error");
-                fileNameDisplay.innerText = "Click to select an image";
-                imageInput.value = '';
-                return;
-            }
-
-            fileNameDisplay.innerText = file.name;
-            setStatus("Generating preview...", "processing");
-
-            try {
-                cachedImageBytes = await processAndPreviewImage(file);
-                previewWrapper.style.display = 'flex'; // Show preview frame
-                setStatus("Preview ready.", "success");
-            } catch (error) {
-                setStatus("Error processing image: " + error.message, "error");
-                imageInput.value = '';
-                fileNameDisplay.innerText = "Click to select an image";
-            }
-        });
-
-        printBtn.addEventListener('click', handlePrintJob);
-
-        function setStatus(message, type) {
-            statusEl.innerText = message;
-            statusEl.className = `status-${type}`;
-        }
-
-        async function handlePrintJob() {
-            const textNote = noteInput.value;
-
-            if (!textNote.trim() && !cachedImageBytes) {
-                setStatus("Please add a note or select an image.", "error");
-                return;
-            }
-
-            printBtn.disabled = true;
-            setStatus("Preparing print job...", "processing");
-
-            try {
-                // Initialize Printer (ESC @)
-                let escpos = [0x1B, 0x40]; 
-
-                // 1. Process Text Note
-                if (textNote.trim()) {
-                    const encoder = new TextEncoder();
-                    const textBytes = encoder.encode(textNote + "\n\n");
-                    for (let b of textBytes) {
-                        escpos.push(b);
-                    }
-                }
-
-                // 2. Append cached image bytes if they exist
-                if (cachedImageBytes) {
-                    escpos = escpos.concat(cachedImageBytes);
-                }
-
-                // 3. Feed paper at the end so it clears the tear bar
-                escpos.push(0x0A, 0x0A, 0x0A, 0x0A);
-
-                // 4. Convert full buffer to Base64
-                let binary = '';
-                const bytes = new Uint8Array(escpos);
-                const len = bytes.byteLength;
-                for (let i = 0; i < len; i++) {
-                    binary += String.fromCharCode(bytes[i]);
-                }
-                const base64Data = window.btoa(binary);
-
-                // 5. Send to Firebase
-                setStatus("Transmitting to hardware...", "processing");
-                await set(ref(db, 'Print_Queue'), base64Data);
-                
-                setStatus("Sent successfully! Printer should start.", "success");
-                
-                // Reset inputs and UI
-                noteInput.value = '';
-                charCount.innerText = '0 / 300';
-                imageInput.value = '';
-                fileNameDisplay.innerText = "Click to select an image";
-                previewWrapper.style.display = 'none';
-                cachedImageBytes = null;
-
-            } catch (error) {
-                setStatus("Error: " + error.message, "error");
-            } finally {
-                printBtn.disabled = false;
-            }
-        }
-
-        // Processes image to B&W, draws preview to canvas, and returns ESC/POS bytes
-        function processAndPreviewImage(file) {
-            return new Promise((resolve, reject) => {
-                const reader = new FileReader();
-                
-                reader.onload = function(event) {
-                    const img = new Image();
-                    img.onload = function() {
-                        // Force width to 384 (standard 58mm printer width)
-                        const printWidth = 384; 
-                        const scale = printWidth / img.width;
-                        const printHeight = Math.floor(img.height * scale);
-                        
-                        previewCanvas.width = printWidth;
-                        previewCanvas.height = printHeight;
-                        
-                        ctx.drawImage(img, 0, 0, printWidth, printHeight);
-                        const imageData = ctx.getImageData(0, 0, printWidth, printHeight);
-                        const pixels = imageData.data;
-
-                        // ESC/POS Command: GS v 0 (Print Raster Image)
-                        let imgEscpos = [0x1D, 0x76, 0x30, 0x00]; 
-                        
-                        let xBytes = printWidth / 8; // 48 bytes across
-                        imgEscpos.push(xBytes % 256, Math.floor(xBytes / 256)); 
-                        imgEscpos.push(printHeight % 256, Math.floor(printHeight / 256));
-
-                        // Convert to 1-bit black and white
-                        for (let y = 0; y < printHeight; y++) {
-                            for (let x = 0; x < printWidth; x += 8) {
-                                let byte = 0;
-                                for (let bit = 0; bit < 8; bit++) {
-                                    let i = ((y * printWidth) + (x + bit)) * 4;
-                                    let brightness = (pixels[i] + pixels[i+1] + pixels[i+2]) / 3;
-                                    
-                                    if (brightness < 128) {
-                                        byte |= (1 << (7 - bit)); // Set print bit
-                                        // Update preview canvas pixel to Black
-                                        pixels[i] = 0;   // R
-                                        pixels[i+1] = 0; // G
-                                        pixels[i+2] = 0; // B
-                                    } else {
-                                        // Update preview canvas pixel to White
-                                        pixels[i] = 255;   // R
-                                        pixels[i+1] = 255; // G
-                                        pixels[i+2] = 255; // B
-                                    }
-                                    pixels[i+3] = 255; // Alpha solid
-                                }
-                                imgEscpos.push(byte);
-                            }
-                        }
-                        
-                        // Push modified B&W pixels back to canvas for the user to see
-                        ctx.putImageData(imageData, 0, 0);
-                        
-                        resolve(imgEscpos);
-                    }
-                    img.onerror = () => reject(new Error("Failed to load image"));
-                    img.src = event.target.result;
-                }
-                reader.onerror = () => reject(new Error("Failed to read file"));
-                reader.readAsDataURL(file);
-            });
-        }
-    </script>
 </head>
 <body>
     <div class="card">
@@ -407,7 +209,7 @@
             
             <!-- Preview Box (Hidden until image selected) -->
             <div class="preview-wrapper" id="previewWrapper">
-                <label>Print Preview</label>
+                <label>B&W Print Preview</label>
                 <div class="preview-box">
                     <canvas id="previewCanvas"></canvas>
                 </div>
@@ -417,5 +219,206 @@
         <button id="printBtn" class="btn-primary">Send to Printer</button>
         <div id="status"></div>
     </div>
+
+    <!-- Script moved to bottom to ensure HTML loads first -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+        import { getDatabase, ref, set } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js";
+
+        // 1. Grab all UI elements
+        const printBtn = document.getElementById('printBtn');
+        const statusEl = document.getElementById('status');
+        const imageInput = document.getElementById('imageInput');
+        const fileNameDisplay = document.getElementById('fileName');
+        const noteInput = document.getElementById('noteInput');
+        const charCount = document.getElementById('charCount');
+        
+        const previewWrapper = document.getElementById('previewWrapper');
+        const previewCanvas = document.getElementById('previewCanvas');
+        const ctx = previewCanvas.getContext('2d');
+
+        const MAX_FILE_SIZE = 15 * 1024 * 1024; // 15 MB
+        let cachedImageBytes = null; // Stores printer bytes
+
+        // Helper to show messages
+        function setStatus(message, type) {
+            statusEl.innerText = message;
+            statusEl.className = type ? `status-${type}` : '';
+            if(!message) statusEl.className = '';
+        }
+
+        // 2. Setup Event Listeners (Independent of Firebase)
+        
+        // Character counter update
+        noteInput.addEventListener('input', (e) => {
+            charCount.innerText = `${e.target.value.length} / 300`;
+        });
+
+        // Image file selection & preview generation
+        imageInput.addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            
+            cachedImageBytes = null;
+            previewWrapper.style.display = 'none';
+            setStatus("", "");
+
+            if (!file) {
+                fileNameDisplay.innerText = "Click to select an image";
+                return;
+            }
+
+            if (file.size > MAX_FILE_SIZE) {
+                setStatus("File too large. Maximum size is 15MB.", "error");
+                fileNameDisplay.innerText = "Click to select an image";
+                imageInput.value = '';
+                return;
+            }
+
+            fileNameDisplay.innerText = file.name;
+            setStatus("Generating B&W preview...", "processing");
+
+            try {
+                cachedImageBytes = await processAndPreviewImage(file);
+                previewWrapper.style.display = 'flex'; // Show preview frame
+                setStatus("Preview ready.", "success");
+            } catch (error) {
+                setStatus("Error processing image: " + error.message, "error");
+                imageInput.value = '';
+                fileNameDisplay.innerText = "Click to select an image";
+            }
+        });
+
+        // Print Button Logic
+        printBtn.addEventListener('click', async () => {
+            const textNote = noteInput.value;
+
+            if (!textNote.trim() && !cachedImageBytes) {
+                setStatus("Please add a note or select an image.", "error");
+                return;
+            }
+
+            // --- FIREBASE INITIALIZATION CHECK ---
+            // Replace with your actual URL. If left as default, it catches the error and tells you.
+            const FIREBASE_URL = "https://printer-fd73c-default-rtdb.firebaseio.com/"; 
+            
+            if (FIREBASE_URL === "YOUR_FIREBASE_DATABASE_URL" || !FIREBASE_URL.startsWith("http")) {
+                setStatus("Error: Please replace YOUR_FIREBASE_DATABASE_URL in the code with your real URL.", "error");
+                return;
+            }
+
+            printBtn.disabled = true;
+            setStatus("Preparing print job...", "processing");
+
+            try {
+                // Initialize Firebase on-demand
+                const app = initializeApp({ databaseURL: FIREBASE_URL });
+                const db = getDatabase(app);
+
+                // Initialize Printer (ESC @)
+                let escpos = [0x1B, 0x40]; 
+
+                // Process Text Note
+                if (textNote.trim()) {
+                    const encoder = new TextEncoder();
+                    const textBytes = encoder.encode(textNote + "\n\n");
+                    for (let b of textBytes) {
+                        escpos.push(b);
+                    }
+                }
+
+                // Append cached image bytes
+                if (cachedImageBytes) {
+                    escpos = escpos.concat(cachedImageBytes);
+                }
+
+                // Feed paper
+                escpos.push(0x0A, 0x0A, 0x0A, 0x0A);
+
+                // Convert full buffer to Base64
+                let binary = '';
+                const bytes = new Uint8Array(escpos);
+                for (let i = 0; i < bytes.byteLength; i++) {
+                    binary += String.fromCharCode(bytes[i]);
+                }
+                const base64Data = window.btoa(binary);
+
+                // Send to Firebase
+                setStatus("Transmitting to hardware...", "processing");
+                await set(ref(db, 'Print_Queue'), base64Data);
+                
+                setStatus("Sent successfully! Printer should start.", "success");
+                
+                // Reset inputs and UI
+                noteInput.value = '';
+                charCount.innerText = '0 / 300';
+                imageInput.value = '';
+                fileNameDisplay.innerText = "Click to select an image";
+                previewWrapper.style.display = 'none';
+                cachedImageBytes = null;
+
+            } catch (error) {
+                setStatus("Hardware connection error: " + error.message, "error");
+            } finally {
+                printBtn.disabled = false;
+            }
+        });
+
+        // 3. Image Processing Logic
+        function processAndPreviewImage(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                
+                reader.onload = function(event) {
+                    const img = new Image();
+                    img.onload = function() {
+                        const printWidth = 384; 
+                        const scale = printWidth / img.width;
+                        const printHeight = Math.floor(img.height * scale);
+                        
+                        previewCanvas.width = printWidth;
+                        previewCanvas.height = printHeight;
+                        
+                        ctx.drawImage(img, 0, 0, printWidth, printHeight);
+                        const imageData = ctx.getImageData(0, 0, printWidth, printHeight);
+                        const pixels = imageData.data;
+
+                        let imgEscpos = [0x1D, 0x76, 0x30, 0x00]; 
+                        
+                        let xBytes = printWidth / 8;
+                        imgEscpos.push(xBytes % 256, Math.floor(xBytes / 256)); 
+                        imgEscpos.push(printHeight % 256, Math.floor(printHeight / 256));
+
+                        // Convert to 1-bit black and white
+                        for (let y = 0; y < printHeight; y++) {
+                            for (let x = 0; x < printWidth; x += 8) {
+                                let byte = 0;
+                                for (let bit = 0; bit < 8; bit++) {
+                                    let i = ((y * printWidth) + (x + bit)) * 4;
+                                    let brightness = (pixels[i] + pixels[i+1] + pixels[i+2]) / 3;
+                                    
+                                    if (brightness < 128) {
+                                        byte |= (1 << (7 - bit)); // Set print bit
+                                        pixels[i] = 0; pixels[i+1] = 0; pixels[i+2] = 0; // Black for canvas
+                                    } else {
+                                        pixels[i] = 255; pixels[i+1] = 255; pixels[i+2] = 255; // White for canvas
+                                    }
+                                    pixels[i+3] = 255; // Alpha solid
+                                }
+                                imgEscpos.push(byte);
+                            }
+                        }
+                        
+                        // Push modified B&W pixels back to canvas
+                        ctx.putImageData(imageData, 0, 0);
+                        resolve(imgEscpos);
+                    }
+                    img.onerror = () => reject(new Error("Failed to load image"));
+                    img.src = event.target.result;
+                }
+                reader.onerror = () => reject(new Error("Failed to read file"));
+                reader.readAsDataURL(file);
+            });
+        }
+    </script>
 </body>
 </html>
