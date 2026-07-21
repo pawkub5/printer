@@ -77,6 +77,13 @@
             border-color: var(--primary);
             box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
         }
+        
+        .char-counter {
+            text-align: right;
+            font-size: 0.75rem;
+            color: var(--text-light);
+            margin-top: 2px;
+        }
 
         .file-input-wrapper {
             position: relative;
@@ -95,7 +102,7 @@
             height: 100%;
         }
 
-        .btn-outline {
+        .btn-outline, .preview-box {
             display: flex;
             align-items: center;
             justify-content: center;
@@ -105,10 +112,13 @@
             border: 2px dashed var(--border);
             color: var(--text-light);
             border-radius: 8px;
+            box-sizing: border-box;
+        }
+
+        .btn-outline {
             font-weight: 600;
             cursor: pointer;
             transition: all 0.2s;
-            box-sizing: border-box;
         }
 
         .file-input-wrapper:hover .btn-outline {
@@ -116,25 +126,27 @@
             color: var(--primary);
         }
 
-        /* New styles for the preview frame */
-        .preview-frame {
-            display: none; /* Hidden until an image is selected */
-            width: 100%;
-            padding: 12px;
-            background-color: var(--surface);
-            border: 2px dashed var(--border);
-            border-radius: 8px;
-            box-sizing: border-box;
-            margin-top: 8px;
-            text-align: center;
+        .preview-wrapper {
+            display: none; /* Hidden by default */
+            flex-direction: column;
+            gap: 8px;
+            margin-top: 12px;
         }
 
-        .preview-frame canvas {
+        .preview-box {
+            padding: 16px;
+            background-image: repeating-linear-gradient(45deg, #f9fafb 25%, transparent 25%, transparent 75%, #f9fafb 75%, #f9fafb), repeating-linear-gradient(45deg, #f9fafb 25%, #ffffff 25%, #ffffff 75%, #f9fafb 75%, #f9fafb);
+            background-position: 0 0, 10px 10px;
+            background-size: 20px 20px;
+        }
+
+        #previewCanvas {
             max-width: 100%;
             height: auto;
+            border: 1px solid var(--border);
             border-radius: 4px;
-            display: block;
-            margin: 0 auto;
+            background: white;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
         }
 
         .btn-primary {
@@ -188,32 +200,53 @@
         const statusEl = document.getElementById('status');
         const imageInput = document.getElementById('imageInput');
         const fileNameDisplay = document.getElementById('fileName');
-        const previewFrame = document.getElementById('previewFrame');
+        const noteInput = document.getElementById('noteInput');
+        const charCount = document.getElementById('charCount');
+        
+        const previewWrapper = document.getElementById('previewWrapper');
         const previewCanvas = document.getElementById('previewCanvas');
-        const ctx = previewCanvas.getContext('2d', { willReadFrequently: true });
+        const ctx = previewCanvas.getContext('2d');
 
-        // Store the processed ESC/POS bytes so we don't re-process on print
-        let processedImageBytes = null;
+        const MAX_FILE_SIZE = 15 * 1024 * 1024; // 15 MB
+        let cachedImageBytes = null; // Stores ESC/POS bytes so we don't process twice
 
-        // Update UI and generate preview when file is selected
+        // Character counter update
+        noteInput.addEventListener('input', (e) => {
+            charCount.innerText = `${e.target.value.length} / 300`;
+        });
+
+        // Handle file selection, validation, and preview generation
         imageInput.addEventListener('change', async (e) => {
-            if (e.target.files.length > 0) {
-                const file = e.target.files[0];
-                fileNameDisplay.innerText = file.name;
-                previewFrame.style.display = 'block'; // Show the preview frame
-                setStatus("Generating preview...", "processing");
-                
-                try {
-                    await generatePreviewAndBuffer(file);
-                    setStatus("", ""); // Clear status
-                } catch (err) {
-                    setStatus("Error generating preview.", "error");
-                }
-            } else {
-                // Reset if user cancels file selection
+            const file = e.target.files[0];
+            
+            // Reset state
+            cachedImageBytes = null;
+            previewWrapper.style.display = 'none';
+            setStatus("", "");
+
+            if (!file) {
                 fileNameDisplay.innerText = "Click to select an image";
-                previewFrame.style.display = 'none';
-                processedImageBytes = null;
+                return;
+            }
+
+            if (file.size > MAX_FILE_SIZE) {
+                setStatus("File too large. Maximum size is 15MB.", "error");
+                fileNameDisplay.innerText = "Click to select an image";
+                imageInput.value = '';
+                return;
+            }
+
+            fileNameDisplay.innerText = file.name;
+            setStatus("Generating preview...", "processing");
+
+            try {
+                cachedImageBytes = await processAndPreviewImage(file);
+                previewWrapper.style.display = 'flex'; // Show preview frame
+                setStatus("Preview ready.", "success");
+            } catch (error) {
+                setStatus("Error processing image: " + error.message, "error");
+                imageInput.value = '';
+                fileNameDisplay.innerText = "Click to select an image";
             }
         });
 
@@ -224,78 +257,10 @@
             statusEl.className = `status-${type}`;
         }
 
-        function generatePreviewAndBuffer(file) {
-            return new Promise((resolve, reject) => {
-                const reader = new FileReader();
-                
-                reader.onload = function(event) {
-                    const img = new Image();
-                    img.onload = function() {
-                        // Force width to 384 (standard 58mm printer width)
-                        const printWidth = 384; 
-                        const scale = printWidth / img.width;
-                        const printHeight = Math.floor(img.height * scale);
-                        
-                        previewCanvas.width = printWidth;
-                        previewCanvas.height = printHeight;
-                        
-                        // Draw original image to canvas
-                        ctx.drawImage(img, 0, 0, printWidth, printHeight);
-                        const imageData = ctx.getImageData(0, 0, printWidth, printHeight);
-                        const pixels = imageData.data;
-
-                        // ESC/POS Command: GS v 0 (Print Raster Image)
-                        let imgEscpos = [0x1D, 0x76, 0x30, 0x00]; 
-                        
-                        let xBytes = printWidth / 8; // 48 bytes across
-                        imgEscpos.push(xBytes % 256, Math.floor(xBytes / 256)); // Width
-                        imgEscpos.push(printHeight % 256, Math.floor(printHeight / 256)); // Height
-
-                        // Process pixels: Build ESC/POS byte array AND update visual canvas to black & white
-                        for (let y = 0; y < printHeight; y++) {
-                            for (let x = 0; x < printWidth; x += 8) {
-                                let byte = 0;
-                                for (let bit = 0; bit < 8; bit++) {
-                                    let i = ((y * printWidth) + (x + bit)) * 4;
-                                    let brightness = (pixels[i] + pixels[i+1] + pixels[i+2]) / 3;
-                                    
-                                    if (brightness < 128) {
-                                        byte |= (1 << (7 - bit));
-                                        // Update canvas pixel to visually show black
-                                        pixels[i] = 0;     // R
-                                        pixels[i+1] = 0;   // G
-                                        pixels[i+2] = 0;   // B
-                                    } else {
-                                        // Update canvas pixel to visually show white
-                                        pixels[i] = 255;   // R
-                                        pixels[i+1] = 255; // G
-                                        pixels[i+2] = 255; // B
-                                    }
-                                    pixels[i+3] = 255; // Alpha opaque
-                                }
-                                imgEscpos.push(byte);
-                            }
-                        }
-                        
-                        // Push the black and white pixels back to the canvas so the user sees it
-                        ctx.putImageData(imageData, 0, 0);
-                        
-                        // Store the byte array for printing
-                        processedImageBytes = imgEscpos;
-                        resolve();
-                    }
-                    img.onerror = () => reject(new Error("Failed to load image"));
-                    img.src = event.target.result;
-                }
-                reader.onerror = () => reject(new Error("Failed to read file"));
-                reader.readAsDataURL(file);
-            });
-        }
-
         async function handlePrintJob() {
-            const textNote = document.getElementById('noteInput').value;
+            const textNote = noteInput.value;
 
-            if (!textNote.trim() && !processedImageBytes) {
+            if (!textNote.trim() && !cachedImageBytes) {
                 setStatus("Please add a note or select an image.", "error");
                 return;
             }
@@ -316,9 +281,9 @@
                     }
                 }
 
-                // 2. Add Pre-processed Image
-                if (processedImageBytes) {
-                    escpos = escpos.concat(processedImageBytes);
+                // 2. Append cached image bytes if they exist
+                if (cachedImageBytes) {
+                    escpos = escpos.concat(cachedImageBytes);
                 }
 
                 // 3. Feed paper at the end so it clears the tear bar
@@ -340,17 +305,84 @@
                 setStatus("Sent successfully! Printer should start.", "success");
                 
                 // Reset inputs and UI
-                document.getElementById('noteInput').value = '';
+                noteInput.value = '';
+                charCount.innerText = '0 / 300';
                 imageInput.value = '';
                 fileNameDisplay.innerText = "Click to select an image";
-                previewFrame.style.display = 'none';
-                processedImageBytes = null;
+                previewWrapper.style.display = 'none';
+                cachedImageBytes = null;
 
             } catch (error) {
                 setStatus("Error: " + error.message, "error");
             } finally {
                 printBtn.disabled = false;
             }
+        }
+
+        // Processes image to B&W, draws preview to canvas, and returns ESC/POS bytes
+        function processAndPreviewImage(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                
+                reader.onload = function(event) {
+                    const img = new Image();
+                    img.onload = function() {
+                        // Force width to 384 (standard 58mm printer width)
+                        const printWidth = 384; 
+                        const scale = printWidth / img.width;
+                        const printHeight = Math.floor(img.height * scale);
+                        
+                        previewCanvas.width = printWidth;
+                        previewCanvas.height = printHeight;
+                        
+                        ctx.drawImage(img, 0, 0, printWidth, printHeight);
+                        const imageData = ctx.getImageData(0, 0, printWidth, printHeight);
+                        const pixels = imageData.data;
+
+                        // ESC/POS Command: GS v 0 (Print Raster Image)
+                        let imgEscpos = [0x1D, 0x76, 0x30, 0x00]; 
+                        
+                        let xBytes = printWidth / 8; // 48 bytes across
+                        imgEscpos.push(xBytes % 256, Math.floor(xBytes / 256)); 
+                        imgEscpos.push(printHeight % 256, Math.floor(printHeight / 256));
+
+                        // Convert to 1-bit black and white
+                        for (let y = 0; y < printHeight; y++) {
+                            for (let x = 0; x < printWidth; x += 8) {
+                                let byte = 0;
+                                for (let bit = 0; bit < 8; bit++) {
+                                    let i = ((y * printWidth) + (x + bit)) * 4;
+                                    let brightness = (pixels[i] + pixels[i+1] + pixels[i+2]) / 3;
+                                    
+                                    if (brightness < 128) {
+                                        byte |= (1 << (7 - bit)); // Set print bit
+                                        // Update preview canvas pixel to Black
+                                        pixels[i] = 0;   // R
+                                        pixels[i+1] = 0; // G
+                                        pixels[i+2] = 0; // B
+                                    } else {
+                                        // Update preview canvas pixel to White
+                                        pixels[i] = 255;   // R
+                                        pixels[i+1] = 255; // G
+                                        pixels[i+2] = 255; // B
+                                    }
+                                    pixels[i+3] = 255; // Alpha solid
+                                }
+                                imgEscpos.push(byte);
+                            }
+                        }
+                        
+                        // Push modified B&W pixels back to canvas for the user to see
+                        ctx.putImageData(imageData, 0, 0);
+                        
+                        resolve(imgEscpos);
+                    }
+                    img.onerror = () => reject(new Error("Failed to load image"));
+                    img.src = event.target.result;
+                }
+                reader.onerror = () => reject(new Error("Failed to read file"));
+                reader.readAsDataURL(file);
+            });
         }
     </script>
 </head>
@@ -360,7 +392,8 @@
         
         <div class="input-group">
             <label for="noteInput">Print a Note</label>
-            <textarea id="noteInput" placeholder="Type your message here..."></textarea>
+            <textarea id="noteInput" placeholder="Type your message here..." maxlength="300"></textarea>
+            <div id="charCount" class="char-counter">0 / 300</div>
         </div>
 
         <div class="input-group">
@@ -372,9 +405,12 @@
                 <input type="file" id="imageInput" accept="image/*" />
             </div>
             
-            <!-- Preview Canvas Container -->
-            <div class="preview-frame" id="previewFrame">
-                <canvas id="previewCanvas"></canvas>
+            <!-- Preview Box (Hidden until image selected) -->
+            <div class="preview-wrapper" id="previewWrapper">
+                <label>Print Preview</label>
+                <div class="preview-box">
+                    <canvas id="previewCanvas"></canvas>
+                </div>
             </div>
         </div>
 
