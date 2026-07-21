@@ -1,365 +1,327 @@
 <!DOCTYPE html>
-
-<html>
-
+<html lang="en">
 <head>
-
-    <title>Thermal Printer Web App</title>
-
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Print Hub</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
     <style>
+        :root {
+            --primary: #4F46E5;
+            --primary-hover: #4338CA;
+            --bg: #F3F4F6;
+            --surface: #FFFFFF;
+            --text: #1F2937;
+            --text-light: #6B7280;
+            --border: #E5E7EB;
+        }
 
-        body { font-family: Arial, sans-serif; text-align: center; margin: 40px; background-color: #f4f4f9; }
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: var(--bg);
+            color: var(--text);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            padding: 20px;
+            box-sizing: border-box;
+        }
 
-        .container { max-width: 600px; margin: auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); }
+        .card {
+            background-color: var(--surface);
+            padding: 32px;
+            border-radius: 16px;
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+            width: 100%;
+            max-width: 420px;
+        }
 
-        button, input { margin: 10px 0; padding: 10px; font-size: 16px; cursor: pointer; }
+        h2 {
+            margin-top: 0;
+            margin-bottom: 24px;
+            text-align: center;
+            font-size: 1.5rem;
+            color: var(--text);
+        }
 
-        #sendButton { background-color: #28a745; color: white; border: none; border-radius: 5px; display: none; width: 100%;}
+        .input-group {
+            margin-bottom: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
 
-        #sendButton:hover { background-color: #218838; }
+        label {
+            font-size: 0.875rem;
+            font-weight: 600;
+            color: var(--text);
+        }
 
-        #previewCanvas { border: 1px dashed #ccc; margin-top: 15px; max-width: 100%; height: auto; image-rendering: auto; }
+        textarea {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            font-family: 'Inter', sans-serif;
+            font-size: 1rem;
+            resize: vertical;
+            min-height: 100px;
+            box-sizing: border-box;
+            transition: border-color 0.2s;
+        }
 
-        #status { font-weight: bold; color: #333; margin-top: 15px; }
+        textarea:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+        }
 
+        .file-input-wrapper {
+            position: relative;
+            overflow: hidden;
+            display: inline-block;
+            width: 100%;
+        }
+
+        .file-input-wrapper input[type="file"] {
+            font-size: 100px;
+            position: absolute;
+            left: 0;
+            top: 0;
+            opacity: 0;
+            cursor: pointer;
+            height: 100%;
+        }
+
+        .btn-outline {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 100%;
+            padding: 12px;
+            background-color: var(--surface);
+            border: 2px dashed var(--border);
+            color: var(--text-light);
+            border-radius: 8px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            box-sizing: border-box;
+        }
+
+        .file-input-wrapper:hover .btn-outline {
+            border-color: var(--primary);
+            color: var(--primary);
+        }
+
+        .btn-primary {
+            width: 100%;
+            padding: 14px;
+            background-color: var(--primary);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background-color 0.2s;
+            margin-top: 10px;
+        }
+
+        .btn-primary:hover {
+            background-color: var(--primary-hover);
+        }
+
+        .btn-primary:disabled {
+            background-color: var(--text-light);
+            cursor: not-allowed;
+        }
+
+        #status {
+            margin-top: 16px;
+            text-align: center;
+            font-size: 0.875rem;
+            font-weight: 600;
+            min-height: 20px;
+        }
+        
+        .status-success { color: #10B981; }
+        .status-error { color: #EF4444; }
+        .status-processing { color: var(--primary); }
     </style>
 
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+        import { getDatabase, ref, set } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js";
 
-
-    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
-
-    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-database-compat.js"></script>
-
-
-
-    <script>
-
-        let base64Payload = ""; 
-
-
-
-        window.onload = function() {
-
-            document.getElementById('imageInput').addEventListener('change', function(e) {
-
-                const file = e.target.files[0];
-
-                if (!file) return;
-
-                
-
-                const reader = new FileReader();
-
-                reader.onload = function(event) {
-
-                    const img = new Image();
-
-                    img.onload = function() { processImage(img); }
-
-                    img.src = event.target.result;
-
-                }
-
-                reader.readAsDataURL(file);
-
-            });
-
-
-
-            document.getElementById('sendButton').addEventListener('click', function() {
-
-                sendToFirebase();
-
-            });
-
+        // ADD YOUR FIREBASE URL HERE
+        const firebaseConfig = {
+            databaseURL: "https://printer-fd73c-default-rtdb.firebaseio.com/" 
         };
+        const app = initializeApp(firebaseConfig);
+        const db = getDatabase(app);
 
+        const printBtn = document.getElementById('printBtn');
+        const statusEl = document.getElementById('status');
+        const imageInput = document.getElementById('imageInput');
+        const fileNameDisplay = document.getElementById('fileName');
 
-
-        function processImage(img) {
-
-            const canvas = document.getElementById('previewCanvas');
-
-            const ctx = canvas.getContext('2d');
-
-            
-
-            const printWidth = 384; 
-
-            const scale = printWidth / img.width;
-
-            const printHeight = Math.floor(img.height * scale);
-
-            
-
-            canvas.width = printWidth;
-
-            canvas.height = printHeight;
-
-            
-
-            // Draw original image
-
-            ctx.drawImage(img, 0, 0, printWidth, printHeight);
-
-            const imageData = ctx.getImageData(0, 0, printWidth, printHeight);
-
-            const pixels = imageData.data;
-
-
-
-            // 1. Convert image to a grayscale array using actual luminance
-
-            let grayPixels = new Float32Array(printWidth * printHeight);
-
-            for (let i = 0; i < pixels.length; i += 4) {
-
-                let pixelIndex = i / 4;
-
-                grayPixels[pixelIndex] = (pixels[i] * 0.299) + (pixels[i+1] * 0.587) + (pixels[i+2] * 0.114);
-
+        // Update UI when file is selected
+        imageInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                fileNameDisplay.innerText = e.target.files[0].name;
+            } else {
+                fileNameDisplay.innerText = "Click to select an image";
             }
+        });
 
+        printBtn.addEventListener('click', handlePrintJob);
 
-
-            // 2. Apply Floyd-Steinberg Dithering
-
-            for (let y = 0; y < printHeight; y++) {
-
-                for (let x = 0; x < printWidth; x++) {
-
-                    let idx = y * printWidth + x;
-
-                    let oldPixel = grayPixels[idx];
-
-                    
-
-                    // Threshold at 128 (middle gray)
-
-                    let newPixel = oldPixel < 128 ? 0 : 255; 
-
-                    grayPixels[idx] = newPixel;
-
-                    
-
-                    // Calculate the error
-
-                    let quantError = oldPixel - newPixel;
-
-
-
-                    // Distribute the error to neighboring pixels
-
-                    if (x + 1 < printWidth) {
-
-                        grayPixels[idx + 1] += quantError * 7 / 16;
-
-                    }
-
-                    if (x - 1 >= 0 && y + 1 < printHeight) {
-
-                        grayPixels[idx - 1 + printWidth] += quantError * 3 / 16;
-
-                    }
-
-                    if (y + 1 < printHeight) {
-
-                        grayPixels[idx + printWidth] += quantError * 5 / 16;
-
-                    }
-
-                    if (x + 1 < printWidth && y + 1 < printHeight) {
-
-                        grayPixels[idx + 1 + printWidth] += quantError * 1 / 16;
-
-                    }
-
-                }
-
-            }
-
-
-
-            // 3. Pack into ESC/POS bytes and update Canvas
-
-            let escpos = [0x1D, 0x76, 0x30, 0x00]; 
-
-            let xBytes = printWidth / 8;
-
-            escpos.push(xBytes % 256, Math.floor(xBytes / 256));
-
-            escpos.push(printHeight % 256, Math.floor(printHeight / 256));
-
-
-
-            for (let y = 0; y < printHeight; y++) {
-
-                for (let x = 0; x < printWidth; x += 8) {
-
-                    let byte = 0;
-
-                    for (let bit = 0; bit < 8; bit++) {
-
-                        let idx = y * printWidth + (x + bit);
-
-                        let bwColor = grayPixels[idx]; // It is now strictly 0 or 255
-
-
-
-                        // Update Canvas for the preview
-
-                        let pIdx = idx * 4;
-
-                        pixels[pIdx] = bwColor;       // R
-
-                        pixels[pIdx+1] = bwColor;     // G
-
-                        pixels[pIdx+2] = bwColor;     // B
-
-                        pixels[pIdx+3] = 255;         // Alpha (fully opaque)
-
-
-
-                        // If pixel is black (0), set the bit for the printer
-
-                        if (bwColor === 0) {
-
-                            byte |= (1 << (7 - bit)); 
-
-                        }
-
-                    }
-
-                    escpos.push(byte);
-
-                }
-
-            }
-
-
-
-            // Put the dithered image onto the screen
-
-            ctx.putImageData(imageData, 0, 0);
-
-
-
-            // Convert to Base64 for database
-
-            let binary = '';
-
-            const bytes = new Uint8Array(escpos);
-
-            for (let i = 0; i < bytes.byteLength; i++) {
-
-                binary += String.fromCharCode(bytes[i]);
-
-            }
-
-            base64Payload = window.btoa(binary);
-
-
-
-            document.getElementById('sendButton').style.display = 'block';
-
-            document.getElementById('status').innerText = "Dithered preview generated. Ready to send!";
-
+        function setStatus(message, type) {
+            statusEl.innerText = message;
+            statusEl.className = `status-${type}`;
         }
 
+        async function handlePrintJob() {
+            const textNote = document.getElementById('noteInput').value;
+            const file = imageInput.files[0];
 
+            if (!textNote.trim() && !file) {
+                setStatus("Please add a note or select an image.", "error");
+                return;
+            }
 
-        function sendToFirebase() {
-
-            const statusText = document.getElementById('status');
-
-            const sendBtn = document.getElementById('sendButton');
-
-            
-
-            // --- PASTE YOUR FIREBASE URL HERE ---
-
-            const firebaseConfig = {
-
-                databaseURL: "https://printer-fd73c-default-rtdb.firebaseio.com/" 
-
-            };
-
-
+            printBtn.disabled = true;
+            setStatus("Preparing print job...", "processing");
 
             try {
+                // Initialize Printer (ESC @)
+                let escpos = [0x1B, 0x40]; 
 
-                if (!firebase.apps.length) {
-
-                    firebase.initializeApp(firebaseConfig);
-
+                // 1. Process Text Note
+                if (textNote.trim()) {
+                    const encoder = new TextEncoder();
+                    const textBytes = encoder.encode(textNote + "\n\n");
+                    for (let b of textBytes) {
+                        escpos.push(b);
+                    }
                 }
 
-                const db = firebase.database();
+                // 2. Process Image
+                if (file) {
+                    setStatus("Processing image dithering...", "processing");
+                    const imgBytes = await processImage(file);
+                    escpos = escpos.concat(imgBytes);
+                }
 
+                // 3. Feed paper at the end so it clears the tear bar
+                escpos.push(0x0A, 0x0A, 0x0A, 0x0A);
+
+                // 4. Convert full buffer to Base64
+                let binary = '';
+                const bytes = new Uint8Array(escpos);
+                const len = bytes.byteLength;
+                for (let i = 0; i < len; i++) {
+                    binary += String.fromCharCode(bytes[i]);
+                }
+                const base64Data = window.btoa(binary);
+
+                // 5. Send to Firebase
+                setStatus("Transmitting to hardware...", "processing");
+                await set(ref(db, 'Print_Queue'), base64Data);
                 
+                setStatus("Sent successfully! Printer should start.", "success");
+                
+                // Reset inputs
+                document.getElementById('noteInput').value = '';
+                imageInput.value = '';
+                fileNameDisplay.innerText = "Click to select an image";
 
-                statusText.innerText = "Sending to Cloud...";
-
-                sendBtn.disabled = true; 
-
-
-
-                db.ref('Print_Queue').set(base64Payload).then(() => {
-
-                    statusText.innerText = "Success! Data is in the cloud.";
-
-                    statusText.style.color = "green";
-
-                    sendBtn.disabled = false;
-
-                }).catch((error) => {
-
-                    statusText.innerText = "Firebase Error: " + error.message;
-
-                    statusText.style.color = "red";
-
-                    sendBtn.disabled = false;
-
-                });
-
-            } catch (err) {
-
-                statusText.innerText = "Setup Error: Did you paste your Firebase URL?";
-
-                statusText.style.color = "red";
-
+            } catch (error) {
+                setStatus("Error: " + error.message, "error");
+            } finally {
+                printBtn.disabled = false;
             }
-
         }
 
+        // Returns a Promise that resolves with the ESC/POS image byte array
+        function processImage(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                
+                reader.onload = function(event) {
+                    const img = new Image();
+                    img.onload = function() {
+                        const canvas = document.createElement('canvas');
+                        const ctx = canvas.getContext('2d');
+                        
+                        // Force width to 384 (standard 58mm printer width)
+                        const printWidth = 384; 
+                        const scale = printWidth / img.width;
+                        const printHeight = Math.floor(img.height * scale);
+                        
+                        canvas.width = printWidth;
+                        canvas.height = printHeight;
+                        
+                        ctx.drawImage(img, 0, 0, printWidth, printHeight);
+                        const imageData = ctx.getImageData(0, 0, printWidth, printHeight);
+                        const pixels = imageData.data;
+
+                        // ESC/POS Command: GS v 0 (Print Raster Image)
+                        let imgEscpos = [0x1D, 0x76, 0x30, 0x00]; 
+                        
+                        let xBytes = printWidth / 8; // 48 bytes across
+                        imgEscpos.push(xBytes % 256, Math.floor(xBytes / 256)); // Width
+                        imgEscpos.push(printHeight % 256, Math.floor(printHeight / 256)); // Height
+
+                        // Convert to 1-bit black and white and pack into bytes
+                        for (let y = 0; y < printHeight; y++) {
+                            for (let x = 0; x < printWidth; x += 8) {
+                                let byte = 0;
+                                for (let bit = 0; bit < 8; bit++) {
+                                    let i = ((y * printWidth) + (x + bit)) * 4;
+                                    let brightness = (pixels[i] + pixels[i+1] + pixels[i+2]) / 3;
+                                    if (brightness < 128) {
+                                        byte |= (1 << (7 - bit));
+                                    }
+                                }
+                                imgEscpos.push(byte);
+                            }
+                        }
+                        resolve(imgEscpos);
+                    }
+                    img.onerror = () => reject(new Error("Failed to load image"));
+                    img.src = event.target.result;
+                }
+                reader.onerror = () => reject(new Error("Failed to read file"));
+                reader.readAsDataURL(file);
+            });
+        }
     </script>
-
 </head>
-
 <body>
-
-    <div class="container">
-
-        <h2>Global Thermal Printer</h2>
-
-        <p>1. Select an image. 2. Verify the dithered preview. 3. Send to ESP32.</p>
-
+    <div class="card">
+        <h2>Remote Print</h2>
         
+        <div class="input-group">
+            <label for="noteInput">Print a Note</label>
+            <textarea id="noteInput" placeholder="Type your message here..."></textarea>
+        </div>
 
-        <input type="file" id="imageInput" accept="image/*" />
+        <div class="input-group">
+            <label>Add an Image</label>
+            <div class="file-input-wrapper">
+                <div class="btn-outline" id="fileName">
+                    Click to select an image
+                </div>
+                <input type="file" id="imageInput" accept="image/*" />
+            </div>
+        </div>
 
-        
-
-        <canvas id="previewCanvas"></canvas>
-
-        
-
-        <button id="sendButton">Send to Printer</button>
-
-        <p id="status"></p>
-
+        <button id="printBtn" class="btn-primary">Send to Printer</button>
+        <div id="status"></div>
     </div>
-
 </body>
-
 </html>
