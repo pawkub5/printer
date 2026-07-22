@@ -455,7 +455,10 @@
                 const base64Data = window.btoa(binary);
 
                 setStatus("Transmitting to hardware...", "processing");
-                await set(ref(db, 'Print_Queue'), base64Data);
+                await set(ref(db, 'Print_Job'), {
+                payload: base64Data,
+                status: true  // Triggers the ESP32 stream callback
+                });
                 
                 setStatus("Sent successfully! Printer should start.", "success");
                 
