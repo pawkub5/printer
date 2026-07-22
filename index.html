@@ -136,14 +136,29 @@
             margin-top: 12px;
         }
 
-        .slider-container {
+        .sliders-wrapper {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            width: 100%;
+            margin-bottom: 8px;
+        }
+
+        .slider-group {
             display: flex;
             align-items: center;
-            gap: 10px;
+            gap: 12px;
             font-size: 0.875rem;
         }
 
-        .slider-container input[type="range"] {
+        .slider-group label {
+            width: 75px;
+            margin: 0;
+            color: var(--text-light);
+            font-weight: 500;
+        }
+
+        .slider-group input[type="range"] {
             flex-grow: 1;
         }
 
@@ -227,9 +242,15 @@
             </div>
             
             <div class="preview-wrapper" id="previewWrapper">
-                <div class="slider-container">
-                    <label>Brightness:</label>
-                    <input type="range" id="brightnessInput" min="-100" max="100" value="0">
+                <div class="sliders-wrapper">
+                    <div class="slider-group">
+                        <label>Brightness:</label>
+                        <input type="range" id="brightnessInput" min="-100" max="100" value="0">
+                    </div>
+                    <div class="slider-group">
+                        <label>Contrast:</label>
+                        <input type="range" id="contrastInput" min="-100" max="100" value="0">
+                    </div>
                 </div>
                 <label>Dithered Print Preview</label>
                 <div class="preview-box">
@@ -257,12 +278,13 @@
         const previewWrapper = document.getElementById('previewWrapper');
         const previewCanvas = document.getElementById('previewCanvas');
         const brightnessInput = document.getElementById('brightnessInput');
+        const contrastInput = document.getElementById('contrastInput');
         const ctx = previewCanvas.getContext('2d');
 
         const MAX_FILE_SIZE = 15 * 1024 * 1024; 
         
         let cachedImageBytes = null; 
-        let currentImageFile = null;
+        let loadedImageElement = null; // Keeps image in memory for fast slider updates
 
         // --- HARDWARE CONFIGURATION ---
         const BORDER_LINE = "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX\n"; // 42 X's
@@ -282,20 +304,26 @@
             charCount.innerText = `${e.target.value.length} / 300`;
         });
 
-        // Re-process image in real-time when slider moves
-        brightnessInput.addEventListener('input', async () => {
-            if (currentImageFile) {
-                cachedImageBytes = await processAndPreviewImage(currentImageFile, parseInt(brightnessInput.value));
+        // Re-process image in real-time when sliders move
+        const applyImageAdjustments = async () => {
+            if (loadedImageElement) {
+                const brightness = parseInt(brightnessInput.value);
+                const contrast = parseInt(contrastInput.value);
+                cachedImageBytes = await processAndPreviewImage(loadedImageElement, brightness, contrast);
             }
-        });
+        };
+
+        brightnessInput.addEventListener('input', applyImageAdjustments);
+        contrastInput.addEventListener('input', applyImageAdjustments);
 
         imageInput.addEventListener('change', async (e) => {
             const file = e.target.files[0];
             
             cachedImageBytes = null;
-            currentImageFile = null;
+            loadedImageElement = null;
             previewWrapper.style.display = 'none';
-            brightnessInput.value = 0; // Reset brightness
+            brightnessInput.value = 0; 
+            contrastInput.value = 0;
             setStatus("", "");
 
             if (!file) {
@@ -311,18 +339,25 @@
             }
 
             fileNameDisplay.innerText = file.name;
-            currentImageFile = file;
-            setStatus("Applying Floyd-Steinberg dithering...", "processing");
+            setStatus("Loading and applying dithering...", "processing");
 
-            try {
-                cachedImageBytes = await processAndPreviewImage(file, 0);
-                previewWrapper.style.display = 'flex'; 
-                setStatus("Preview ready.", "success");
-            } catch (error) {
-                setStatus("Error processing image: " + error.message, "error");
-                imageInput.value = '';
-                fileNameDisplay.innerText = "Click to select an image";
-            }
+            // Load file into an Image object once for fast re-rendering
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                const img = new Image();
+                img.onload = async () => {
+                    loadedImageElement = img;
+                    await applyImageAdjustments();
+                    previewWrapper.style.display = 'flex'; 
+                    setStatus("Preview ready.", "success");
+                };
+                img.onerror = () => {
+                    setStatus("Error loading image file.", "error");
+                    imageInput.value = '';
+                };
+                img.src = event.target.result;
+            };
+            reader.readAsDataURL(file);
         });
 
         // Custom encoder for Polish characters (CP852)
@@ -339,8 +374,7 @@
                     bytes.push(cp852Map[char]);
                 } else {
                     let code = text.charCodeAt(i);
-                    // Fallback for standard ASCII. Anything out of bounds becomes '?'
-                    bytes.push(code > 255 ? 63 : code); 
+                    bytes.push(code > 255 ? 63 : code); // ? for unknown
                 }
             }
             return bytes;
@@ -377,42 +411,42 @@
 
                 let escpos = [];
                 
-                // 1. Initialize and set code page for Polish chars
+                // 1. Initialize and set code page
                 escpos.push(...CMD_INIT, ...CMD_CP852);
 
-                // 2. Top Border (Centered)
+                // 2. Top Border
                 escpos.push(...CMD_ALIGN_CENTER);
                 escpos.push(...encodePolishToBytes(BORDER_LINE));
                 
-                // 3. Metadata (Left Aligned)
+                // 3. Metadata
                 escpos.push(...CMD_ALIGN_LEFT);
                 escpos.push(...encodePolishToBytes(`Data: ${getTimestamp()}\n\n`));
                 escpos.push(...encodePolishToBytes(`Wiadomość od: ${userName}\n\n`));
 
-                // 4. Note Content (if exists)
+                // 4. Note Content
                 if (textNote) {
                     escpos.push(...encodePolishToBytes(`Treść:\n`));
                     escpos.push(...encodePolishToBytes(textNote + "\n\n"));
                 }
 
-                // 5. Image Content (if exists)
+                // 5. Image Content
                 if (cachedImageBytes) {
                     escpos.push(...CMD_ALIGN_LEFT);
                     escpos.push(...encodePolishToBytes(`Zdjęcie:\n`));
                     escpos.push(...CMD_ALIGN_CENTER);
                     escpos.push(...cachedImageBytes);
-                    escpos.push(0x0A); // New line after image
+                    escpos.push(0x0A);
                 }
 
-                // 6. Bottom Border (Centered)
+                // 6. Bottom Border
                 escpos.push(...CMD_ALIGN_CENTER);
                 escpos.push(...encodePolishToBytes(BORDER_LINE));
 
                 // 7. Feed paper and Cut
-                escpos.push(0x0A, 0x0A, 0x0A, 0x0A); // Feed lines
-                escpos.push(...CMD_CUT_PAPER); // Auto Cut Paper
+                escpos.push(0x0A, 0x0A, 0x0A, 0x0A);
+                escpos.push(...CMD_CUT_PAPER);
 
-                // Convert array to Base64
+                // Convert to Base64
                 let binary = '';
                 const bytes = new Uint8Array(escpos);
                 for (let i = 0; i < bytes.byteLength; i++) {
@@ -433,7 +467,7 @@
                 fileNameDisplay.innerText = "Click to select an image";
                 previewWrapper.style.display = 'none';
                 cachedImageBytes = null;
-                currentImageFile = null;
+                loadedImageElement = null;
 
             } catch (error) {
                 setStatus("Hardware connection error: " + error.message, "error");
@@ -442,89 +476,94 @@
             }
         });
 
-        function processAndPreviewImage(file, brightnessOffset) {
-            return new Promise((resolve, reject) => {
-                const reader = new FileReader();
+        function processAndPreviewImage(img, brightnessOffset, contrastValue) {
+            return new Promise((resolve) => {
+                const printWidth = 512; 
+                const scale = printWidth / img.width;
+                const printHeight = Math.floor(img.height * scale);
                 
-                reader.onload = function(event) {
-                    const img = new Image();
-                    img.onload = function() {
-                        const printWidth = 512; 
-                        const scale = printWidth / img.width;
-                        const printHeight = Math.floor(img.height * scale);
-                        
-                        previewCanvas.width = printWidth;
-                        previewCanvas.height = printHeight;
-                        
-                        ctx.drawImage(img, 0, 0, printWidth, printHeight);
-                        const imageData = ctx.getImageData(0, 0, printWidth, printHeight);
-                        const pixels = imageData.data;
+                previewCanvas.width = printWidth;
+                previewCanvas.height = printHeight;
+                
+                ctx.drawImage(img, 0, 0, printWidth, printHeight);
+                const imageData = ctx.getImageData(0, 0, printWidth, printHeight);
+                const pixels = imageData.data;
 
-                        // 1. Convert to Grayscale Float array and apply brightness
-                        const grayData = new Float32Array(printWidth * printHeight);
-                        for (let i = 0; i < pixels.length; i += 4) {
-                            let gray = (pixels[i] + pixels[i+1] + pixels[i+2]) / 3;
-                            
-                            // Apply brightness offset
-                            gray += brightnessOffset;
-                            gray = Math.max(0, Math.min(255, gray)); // Clamp between 0 and 255
-                            
-                            grayData[i/4] = gray;
-                        }
+                // Contrast algorithm factor
+                const contrastFactor = (259 * (contrastValue + 255)) / (255 * (259 - contrastValue));
 
-                        // 2. Apply Floyd-Steinberg Dithering
-                        for (let y = 0; y < printHeight; y++) {
-                            for (let x = 0; x < printWidth; x++) {
-                                let idx = y * printWidth + x;
-                                let oldPixel = grayData[idx];
-                                let newPixel = oldPixel < 128 ? 0 : 255; 
-                                
-                                grayData[idx] = newPixel;
-                                let err = oldPixel - newPixel;
-                                
-                                if (x + 1 < printWidth) grayData[idx + 1] += err * 7/16;
-                                if (x - 1 >= 0 && y + 1 < printHeight) grayData[idx + printWidth - 1] += err * 3/16;
-                                if (y + 1 < printHeight) grayData[idx + printWidth] += err * 5/16;
-                                if (x + 1 < printWidth && y + 1 < printHeight) grayData[idx + printWidth + 1] += err * 1/16;
-                            }
-                        }
-
-                        // 3. Re-pack bytes for UI preview and Printer format
-                        let imgEscpos = [0x1D, 0x76, 0x30, 0x00]; 
-                        let xBytes = printWidth / 8;
-                        imgEscpos.push(xBytes % 256, Math.floor(xBytes / 256)); 
-                        imgEscpos.push(printHeight % 256, Math.floor(printHeight / 256));
-
-                        for (let y = 0; y < printHeight; y++) {
-                            for (let x = 0; x < printWidth; x += 8) {
-                                let byte = 0;
-                                for (let bit = 0; bit < 8; bit++) {
-                                    let idx = (y * printWidth) + (x + bit);
-                                    let color = grayData[idx]; 
-                                    
-                                    // Update canvas pixels
-                                    let pIdx = idx * 4;
-                                    pixels[pIdx] = color;
-                                    pixels[pIdx+1] = color;
-                                    pixels[pIdx+2] = color;
-                                    pixels[pIdx+3] = 255;
-                                    
-                                    if (color === 0) {
-                                        byte |= (1 << (7 - bit));
-                                    }
-                                }
-                                imgEscpos.push(byte);
-                            }
-                        }
-                        
-                        ctx.putImageData(imageData, 0, 0);
-                        resolve(imgEscpos);
-                    }
-                    img.onerror = () => reject(new Error("Failed to load image"));
-                    img.src = event.target.result;
+                // 1. Convert to Grayscale Float array, applying Brightness & Contrast
+                const grayData = new Float32Array(printWidth * printHeight);
+                for (let i = 0; i < pixels.length; i += 4) {
+                    // Extract alpha to prevent transparent images turning black
+                    const alpha = pixels[i+3] / 255;
+                    
+                    // Blend pixel with white background based on transparency
+                    const r = pixels[i] * alpha + 255 * (1 - alpha);
+                    const g = pixels[i+1] * alpha + 255 * (1 - alpha);
+                    const b = pixels[i+2] * alpha + 255 * (1 - alpha);
+                    
+                    let gray = (r + g + b) / 3;
+                    
+                    // Apply Contrast
+                    gray = contrastFactor * (gray - 128) + 128;
+                    
+                    // Apply Brightness
+                    gray += brightnessOffset;
+                    
+                    // Clamp between 0 and 255
+                    gray = Math.max(0, Math.min(255, gray));
+                    
+                    grayData[i/4] = gray;
                 }
-                reader.onerror = () => reject(new Error("Failed to read file"));
-                reader.readAsDataURL(file);
+
+                // 2. Apply Floyd-Steinberg Dithering
+                for (let y = 0; y < printHeight; y++) {
+                    for (let x = 0; x < printWidth; x++) {
+                        let idx = y * printWidth + x;
+                        let oldPixel = grayData[idx];
+                        let newPixel = oldPixel < 128 ? 0 : 255; 
+                        
+                        grayData[idx] = newPixel;
+                        let err = oldPixel - newPixel;
+                        
+                        if (x + 1 < printWidth) grayData[idx + 1] += err * 7/16;
+                        if (x - 1 >= 0 && y + 1 < printHeight) grayData[idx + printWidth - 1] += err * 3/16;
+                        if (y + 1 < printHeight) grayData[idx + printWidth] += err * 5/16;
+                        if (x + 1 < printWidth && y + 1 < printHeight) grayData[idx + printWidth + 1] += err * 1/16;
+                    }
+                }
+
+                // 3. Re-pack bytes for UI preview and Printer format
+                let imgEscpos = [0x1D, 0x76, 0x30, 0x00]; 
+                let xBytes = printWidth / 8;
+                imgEscpos.push(xBytes % 256, Math.floor(xBytes / 256)); 
+                imgEscpos.push(printHeight % 256, Math.floor(printHeight / 256));
+
+                for (let y = 0; y < printHeight; y++) {
+                    for (let x = 0; x < printWidth; x += 8) {
+                        let byte = 0;
+                        for (let bit = 0; bit < 8; bit++) {
+                            let idx = (y * printWidth) + (x + bit);
+                            let color = grayData[idx]; 
+                            
+                            // Update canvas pixels
+                            let pIdx = idx * 4;
+                            pixels[pIdx] = color;
+                            pixels[pIdx+1] = color;
+                            pixels[pIdx+2] = color;
+                            pixels[pIdx+3] = 255;
+                            
+                            if (color === 0) {
+                                byte |= (1 << (7 - bit));
+                            }
+                        }
+                        imgEscpos.push(byte);
+                    }
+                }
+                
+                ctx.putImageData(imageData, 0, 0);
+                resolve(imgEscpos);
             });
         }
     </script>
