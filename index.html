@@ -59,20 +59,23 @@
             color: var(--text);
         }
 
-        textarea {
+        input[type="text"], textarea {
             width: 100%;
             padding: 12px;
             border: 1px solid var(--border);
             border-radius: 8px;
             font-family: 'Inter', sans-serif;
             font-size: 1rem;
-            resize: vertical;
-            min-height: 100px;
             box-sizing: border-box;
             transition: border-color 0.2s;
         }
 
-        textarea:focus {
+        textarea {
+            resize: vertical;
+            min-height: 100px;
+        }
+
+        input[type="text"]:focus, textarea:focus {
             outline: none;
             border-color: var(--primary);
             box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
@@ -129,8 +132,19 @@
         .preview-wrapper {
             display: none; 
             flex-direction: column;
-            gap: 8px;
+            gap: 12px;
             margin-top: 12px;
+        }
+
+        .slider-container {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 0.875rem;
+        }
+
+        .slider-container input[type="range"] {
+            flex-grow: 1;
         }
 
         .preview-box {
@@ -193,6 +207,11 @@
         <h2>Remote Print</h2>
         
         <div class="input-group">
+            <label for="nameInput">Your Name</label>
+            <input type="text" id="nameInput" placeholder="Enter your name..." maxlength="40">
+        </div>
+
+        <div class="input-group">
             <label for="noteInput">Print a Note</label>
             <textarea id="noteInput" placeholder="Type your message here..." maxlength="300"></textarea>
             <div id="charCount" class="char-counter">0 / 300</div>
@@ -208,6 +227,10 @@
             </div>
             
             <div class="preview-wrapper" id="previewWrapper">
+                <div class="slider-container">
+                    <label>Brightness:</label>
+                    <input type="range" id="brightnessInput" min="-100" max="100" value="0">
+                </div>
                 <label>Dithered Print Preview</label>
                 <div class="preview-box">
                     <canvas id="previewCanvas"></canvas>
@@ -225,6 +248,7 @@
 
         const printBtn = document.getElementById('printBtn');
         const statusEl = document.getElementById('status');
+        const nameInput = document.getElementById('nameInput');
         const imageInput = document.getElementById('imageInput');
         const fileNameDisplay = document.getElementById('fileName');
         const noteInput = document.getElementById('noteInput');
@@ -232,10 +256,21 @@
         
         const previewWrapper = document.getElementById('previewWrapper');
         const previewCanvas = document.getElementById('previewCanvas');
+        const brightnessInput = document.getElementById('brightnessInput');
         const ctx = previewCanvas.getContext('2d');
 
         const MAX_FILE_SIZE = 15 * 1024 * 1024; 
+        
         let cachedImageBytes = null; 
+        let currentImageFile = null;
+
+        // --- HARDWARE CONFIGURATION ---
+        const BORDER_LINE = "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX\n"; // 42 X's
+        const CMD_INIT = [0x1B, 0x40];
+        const CMD_CP852 = [0x1B, 0x74, 0x12]; // Select character code page 18 (CP852 / Mazovia for Polish)
+        const CMD_ALIGN_LEFT = [0x1B, 0x61, 0x00];
+        const CMD_ALIGN_CENTER = [0x1B, 0x61, 0x01];
+        const CMD_CUT_PAPER = [0x1D, 0x56, 0x41, 0x10]; // GS V A (Auto Cut)
 
         function setStatus(message, type) {
             statusEl.innerText = message;
@@ -247,11 +282,20 @@
             charCount.innerText = `${e.target.value.length} / 300`;
         });
 
+        // Re-process image in real-time when slider moves
+        brightnessInput.addEventListener('input', async () => {
+            if (currentImageFile) {
+                cachedImageBytes = await processAndPreviewImage(currentImageFile, parseInt(brightnessInput.value));
+            }
+        });
+
         imageInput.addEventListener('change', async (e) => {
             const file = e.target.files[0];
             
             cachedImageBytes = null;
+            currentImageFile = null;
             previewWrapper.style.display = 'none';
+            brightnessInput.value = 0; // Reset brightness
             setStatus("", "");
 
             if (!file) {
@@ -267,10 +311,11 @@
             }
 
             fileNameDisplay.innerText = file.name;
+            currentImageFile = file;
             setStatus("Applying Floyd-Steinberg dithering...", "processing");
 
             try {
-                cachedImageBytes = await processAndPreviewImage(file);
+                cachedImageBytes = await processAndPreviewImage(file, 0);
                 previewWrapper.style.display = 'flex'; 
                 setStatus("Preview ready.", "success");
             } catch (error) {
@@ -280,10 +325,42 @@
             }
         });
 
-        printBtn.addEventListener('click', async () => {
-            const textNote = noteInput.value;
+        // Custom encoder for Polish characters (CP852)
+        function encodePolishToBytes(text) {
+            const cp852Map = {
+                'ą': 0xA4, 'ć': 0x86, 'ę': 0xA9, 'ł': 0x88, 'ń': 0xE4, 'ó': 0xA2, 'ś': 0x98, 'ź': 0xAB, 'ż': 0xBE,
+                'Ą': 0xA5, 'Ć': 0x8F, 'Ę': 0xA8, 'Ł': 0x9D, 'Ń': 0xE3, 'Ó': 0xE0, 'Ś': 0x97, 'Ź': 0x8D, 'Ż': 0xBD
+            };
+            
+            let bytes = [];
+            for (let i = 0; i < text.length; i++) {
+                let char = text[i];
+                if (cp852Map[char] !== undefined) {
+                    bytes.push(cp852Map[char]);
+                } else {
+                    let code = text.charCodeAt(i);
+                    // Fallback for standard ASCII. Anything out of bounds becomes '?'
+                    bytes.push(code > 255 ? 63 : code); 
+                }
+            }
+            return bytes;
+        }
 
-            if (!textNote.trim() && !cachedImageBytes) {
+        function getTimestamp() {
+            const now = new Date();
+            const hh = String(now.getHours()).padStart(2, '0');
+            const mm = String(now.getMinutes()).padStart(2, '0');
+            const dd = String(now.getDate()).padStart(2, '0');
+            const mo = String(now.getMonth() + 1).padStart(2, '0');
+            const yyyy = now.getFullYear();
+            return `${hh}:${mm} - ${dd}.${mo}.${yyyy}`;
+        }
+
+        printBtn.addEventListener('click', async () => {
+            const userName = nameInput.value.trim() || "Anonim";
+            const textNote = noteInput.value.trim();
+
+            if (!textNote && !cachedImageBytes) {
                 setStatus("Please add a note or select an image.", "error");
                 return;
             }
@@ -291,11 +368,6 @@
             // ADD YOUR FIREBASE URL HERE
             const FIREBASE_URL = "https://printer-fd73c-default-rtdb.firebaseio.com/"; 
             
-            if (FIREBASE_URL === "YOUR_FIREBASE_DATABASE_URL" || !FIREBASE_URL.startsWith("http")) {
-                setStatus("Error: Please replace YOUR_FIREBASE_DATABASE_URL in the code with your real URL.", "error");
-                return;
-            }
-
             printBtn.disabled = true;
             setStatus("Preparing print job...", "processing");
 
@@ -303,22 +375,44 @@
                 const app = initializeApp({ databaseURL: FIREBASE_URL });
                 const db = getDatabase(app);
 
-                let escpos = [0x1B, 0x40]; 
+                let escpos = [];
+                
+                // 1. Initialize and set code page for Polish chars
+                escpos.push(...CMD_INIT, ...CMD_CP852);
 
-                if (textNote.trim()) {
-                    const encoder = new TextEncoder();
-                    const textBytes = encoder.encode(textNote + "\n\n");
-                    for (let b of textBytes) {
-                        escpos.push(b);
-                    }
+                // 2. Top Border (Centered)
+                escpos.push(...CMD_ALIGN_CENTER);
+                escpos.push(...encodePolishToBytes(BORDER_LINE));
+                
+                // 3. Metadata (Left Aligned)
+                escpos.push(...CMD_ALIGN_LEFT);
+                escpos.push(...encodePolishToBytes(`Data: ${getTimestamp()}\n\n`));
+                escpos.push(...encodePolishToBytes(`Wiadomość od: ${userName}\n\n`));
+
+                // 4. Note Content (if exists)
+                if (textNote) {
+                    escpos.push(...encodePolishToBytes(`Treść:\n`));
+                    escpos.push(...encodePolishToBytes(textNote + "\n\n"));
                 }
 
+                // 5. Image Content (if exists)
                 if (cachedImageBytes) {
-                    escpos = escpos.concat(cachedImageBytes);
+                    escpos.push(...CMD_ALIGN_LEFT);
+                    escpos.push(...encodePolishToBytes(`Zdjęcie:\n`));
+                    escpos.push(...CMD_ALIGN_CENTER);
+                    escpos.push(...cachedImageBytes);
+                    escpos.push(0x0A); // New line after image
                 }
 
-                escpos.push(0x0A, 0x0A, 0x0A, 0x0A);
+                // 6. Bottom Border (Centered)
+                escpos.push(...CMD_ALIGN_CENTER);
+                escpos.push(...encodePolishToBytes(BORDER_LINE));
 
+                // 7. Feed paper and Cut
+                escpos.push(0x0A, 0x0A, 0x0A, 0x0A); // Feed lines
+                escpos.push(...CMD_CUT_PAPER); // Auto Cut Paper
+
+                // Convert array to Base64
                 let binary = '';
                 const bytes = new Uint8Array(escpos);
                 for (let i = 0; i < bytes.byteLength; i++) {
@@ -331,12 +425,15 @@
                 
                 setStatus("Sent successfully! Printer should start.", "success");
                 
+                // Clear UI
+                nameInput.value = '';
                 noteInput.value = '';
                 charCount.innerText = '0 / 300';
                 imageInput.value = '';
                 fileNameDisplay.innerText = "Click to select an image";
                 previewWrapper.style.display = 'none';
                 cachedImageBytes = null;
+                currentImageFile = null;
 
             } catch (error) {
                 setStatus("Hardware connection error: " + error.message, "error");
@@ -345,7 +442,7 @@
             }
         });
 
-        function processAndPreviewImage(file) {
+        function processAndPreviewImage(file, brightnessOffset) {
             return new Promise((resolve, reject) => {
                 const reader = new FileReader();
                 
@@ -363,23 +460,28 @@
                         const imageData = ctx.getImageData(0, 0, printWidth, printHeight);
                         const pixels = imageData.data;
 
-                        // 1. Convert to Grayscale Float array to preserve mathematical errors accurately
+                        // 1. Convert to Grayscale Float array and apply brightness
                         const grayData = new Float32Array(printWidth * printHeight);
                         for (let i = 0; i < pixels.length; i += 4) {
-                            grayData[i/4] = (pixels[i] + pixels[i+1] + pixels[i+2]) / 3;
+                            let gray = (pixels[i] + pixels[i+1] + pixels[i+2]) / 3;
+                            
+                            // Apply brightness offset
+                            gray += brightnessOffset;
+                            gray = Math.max(0, Math.min(255, gray)); // Clamp between 0 and 255
+                            
+                            grayData[i/4] = gray;
                         }
 
-                        // 2. Apply proper Floyd-Steinberg Dithering
+                        // 2. Apply Floyd-Steinberg Dithering
                         for (let y = 0; y < printHeight; y++) {
                             for (let x = 0; x < printWidth; x++) {
                                 let idx = y * printWidth + x;
                                 let oldPixel = grayData[idx];
-                                let newPixel = oldPixel < 128 ? 0 : 255; // 0 is black, 255 is white
+                                let newPixel = oldPixel < 128 ? 0 : 255; 
                                 
                                 grayData[idx] = newPixel;
                                 let err = oldPixel - newPixel;
                                 
-                                // Distribute the error to neighboring pixels
                                 if (x + 1 < printWidth) grayData[idx + 1] += err * 7/16;
                                 if (x - 1 >= 0 && y + 1 < printHeight) grayData[idx + printWidth - 1] += err * 3/16;
                                 if (y + 1 < printHeight) grayData[idx + printWidth] += err * 5/16;
@@ -387,7 +489,7 @@
                             }
                         }
 
-                        // 3. Re-pack bytes for both the UI preview and the Printer format
+                        // 3. Re-pack bytes for UI preview and Printer format
                         let imgEscpos = [0x1D, 0x76, 0x30, 0x00]; 
                         let xBytes = printWidth / 8;
                         imgEscpos.push(xBytes % 256, Math.floor(xBytes / 256)); 
@@ -398,16 +500,15 @@
                                 let byte = 0;
                                 for (let bit = 0; bit < 8; bit++) {
                                     let idx = (y * printWidth) + (x + bit);
-                                    let color = grayData[idx]; // will be either 0 or 255 after dithering
+                                    let color = grayData[idx]; 
                                     
-                                    // Map back to canvas array to show preview
+                                    // Update canvas pixels
                                     let pIdx = idx * 4;
                                     pixels[pIdx] = color;
                                     pixels[pIdx+1] = color;
                                     pixels[pIdx+2] = color;
                                     pixels[pIdx+3] = 255;
                                     
-                                    // If pixel is black, set the printer bit
                                     if (color === 0) {
                                         byte |= (1 << (7 - bit));
                                     }
@@ -416,7 +517,6 @@
                             }
                         }
                         
-                        // Show on UI
                         ctx.putImageData(imageData, 0, 0);
                         resolve(imgEscpos);
                     }
