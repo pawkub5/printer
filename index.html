@@ -64,13 +64,17 @@
             padding: 12px;
             border: 1px solid var(--border);
             border-radius: 8px;
-            font-family: 'Inter', sans-serif;
             font-size: 1rem;
             box-sizing: border-box;
             transition: border-color 0.2s;
         }
+        
+        input[type="text"] {
+            font-family: 'Inter', sans-serif;
+        }
 
         textarea {
+            font-family: monospace; /* Better visual representation for 42-char limit */
             resize: vertical;
             min-height: 100px;
         }
@@ -299,9 +303,55 @@
             statusEl.className = type ? `status-${type}` : '';
             if(!message) statusEl.className = '';
         }
+
+        // Filters out emojis and weird characters. Allows basic ASCII + Polish Letters + Newlines
+        function filterAllowedChars(text) {
+            return text.replace(/[^\x20-\x7E\n\rąćęłńóśźżĄĆĘŁŃÓŚŹŻ]/g, '');
+        }
+
+        // Name input filtering
+        nameInput.addEventListener('input', function(e) {
+            let cursorPosition = this.selectionStart;
+            let originalLength = this.value.length;
+            let val = filterAllowedChars(this.value);
+            
+            if (val !== this.value) {
+                this.value = val;
+                let newCursor = cursorPosition - (originalLength - val.length);
+                this.setSelectionRange(newCursor, newCursor);
+            }
+        });
         
-        noteInput.addEventListener('input', (e) => {
-            charCount.innerText = `${e.target.value.length} / 300`;
+        // Note input filtering & 42-char auto-wrap
+        noteInput.addEventListener('input', function(e) {
+            let cursorPosition = this.selectionStart;
+            let originalLength = this.value.length;
+            
+            // 1. Remove emojis and weird characters
+            let val = filterAllowedChars(this.value);
+            
+            // 2. Enforce 42 characters per line limit
+            let lines = val.split('\n');
+            let newLines = [];
+            for (let line of lines) {
+                while (line.length > 42) {
+                    newLines.push(line.substring(0, 42));
+                    line = line.substring(42);
+                }
+                newLines.push(line);
+            }
+            val = newLines.join('\n');
+
+            // Apply modifications
+            if (val !== this.value) {
+                this.value = val;
+                // Attempt to preserve cursor position after formatting
+                let newCursor = cursorPosition - (originalLength - val.length);
+                if(newCursor > this.value.length) newCursor = this.value.length;
+                this.setSelectionRange(newCursor, newCursor);
+            }
+
+            charCount.innerText = `${this.value.length} / 300`;
         });
 
         // Re-process image in real-time when sliders move
@@ -413,6 +463,16 @@
                 
                 // 1. Initialize and set code page
                 escpos.push(...CMD_INIT, ...CMD_CP852);
+
+                // --- ADDED: BIG "FAX" HEADER ---
+                const CMD_TEXT_BIG = [0x1B, 0x21, 0x30]; // Double width & double height
+                const CMD_TEXT_NORMAL = [0x1B, 0x21, 0x00]; // Reset text size
+                
+                escpos.push(...CMD_ALIGN_CENTER);
+                escpos.push(...CMD_TEXT_BIG);
+                escpos.push(...encodePolishToBytes("FAX\n\n"));
+                escpos.push(...CMD_TEXT_NORMAL);
+                // -------------------------------
 
                 // 2. Top Border
                 escpos.push(...CMD_ALIGN_CENTER);
