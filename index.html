@@ -287,7 +287,7 @@
         let loadedImageElement = null; // Keeps image in memory for fast slider updates
 
         // --- HARDWARE CONFIGURATION ---
-        const BORDER_LINE = "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX\n"; // 42 X's
+        const BORDER_LINE = "------------------------------------------\n"; // 42 X's
         const CMD_INIT = [0x1B, 0x40];
         const CMD_CP852 = [0x1B, 0x74, 0x12]; // Select character code page 18 (CP852 / Mazovia for Polish)
         const CMD_ALIGN_LEFT = [0x1B, 0x61, 0x00];
@@ -420,22 +420,21 @@
                 
                 // 3. Metadata
                 escpos.push(...CMD_ALIGN_LEFT);
-                escpos.push(...encodePolishToBytes(`Data: ${getTimestamp()}\n\n`));
-                escpos.push(...encodePolishToBytes(`Wiadomość od: ${userName}\n\n`));
+                escpos.push(...encodePolishToBytes(`WIADOMOŚĆ Z: ${getTimestamp()}\n\n`));
+                escpos.push(...encodePolishToBytes(`OD: ${userName}\n\n`));
 
                 // 4. Note Content
                 if (textNote) {
-                    escpos.push(...encodePolishToBytes(`Treść:\n`));
+                    escpos.push(...encodePolishToBytes(`TREŚĆ:\n`));
                     escpos.push(...encodePolishToBytes(textNote + "\n\n"));
                 }
 
                 // 5. Image Content
                 if (cachedImageBytes) {
-                    escpos.push(...CMD_ALIGN_LEFT);
-                    escpos.push(...encodePolishToBytes(`Zdjęcie:\n`));
+                    escpos.push(...CMD_ALIGN_CENTER);
+                    escpos.push(...encodePolishToBytes(BORDER_LINE));
                     escpos.push(...CMD_ALIGN_CENTER);
                     escpos.push(...cachedImageBytes);
-                    escpos.push(0x0A);
                 }
 
                 // 6. Bottom Border
@@ -443,7 +442,7 @@
                 escpos.push(...encodePolishToBytes(BORDER_LINE));
 
                 // 7. Feed paper and Cut
-                escpos.push(0x0A, 0x0A, 0x0A, 0x0A);
+                escpos.push(0x0A);
                 escpos.push(...CMD_CUT_PAPER);
 
                 // Convert to Base64
