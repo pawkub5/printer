@@ -74,7 +74,7 @@
         }
 
         textarea {
-            font-family: monospace;
+            font-family: monospace; /* Better visual representation for 42-char limit */
             resize: vertical;
             min-height: 100px;
         }
@@ -288,14 +288,15 @@
         const MAX_FILE_SIZE = 15 * 1024 * 1024; 
         
         let cachedImageBytes = null; 
-        let loadedImageElement = null; 
+        let loadedImageElement = null; // Keeps image in memory for fast slider updates
 
-        const BORDER_LINE = "------------------------------------------\n"; 
+        // --- HARDWARE CONFIGURATION ---
+        const BORDER_LINE = "------------------------------------------\n"; // 42 X's
         const CMD_INIT = [0x1B, 0x40];
-        const CMD_CP852 = [0x1B, 0x74, 0x12]; 
+        const CMD_CP852 = [0x1B, 0x74, 0x12]; // Select character code page 18 (CP852 / Mazovia for Polish)
         const CMD_ALIGN_LEFT = [0x1B, 0x61, 0x00];
         const CMD_ALIGN_CENTER = [0x1B, 0x61, 0x01];
-        const CMD_CUT_PAPER = [0x1D, 0x56, 0x41, 0x10]; 
+        const CMD_CUT_PAPER = [0x1D, 0x56, 0x41, 0x10]; // GS V A (Auto Cut)
 
         function setStatus(message, type) {
             statusEl.innerText = message;
@@ -303,10 +304,12 @@
             if(!message) statusEl.className = '';
         }
 
+        // Filters out emojis and weird characters. Allows basic ASCII + Polish Letters + Newlines
         function filterAllowedChars(text) {
             return text.replace(/[^\x20-\x7E\n\rąćęłńóśźżĄĆĘŁŃÓŚŹŻ]/g, '');
         }
 
+        // Name input filtering
         nameInput.addEventListener('input', function(e) {
             let cursorPosition = this.selectionStart;
             let originalLength = this.value.length;
@@ -319,12 +322,15 @@
             }
         });
         
+        // Note input filtering & 42-char auto-wrap
         noteInput.addEventListener('input', function(e) {
             let cursorPosition = this.selectionStart;
             let originalLength = this.value.length;
             
+            // 1. Remove emojis and weird characters
             let val = filterAllowedChars(this.value);
             
+            // 2. Enforce 42 characters per line limit
             let lines = val.split('\n');
             let newLines = [];
             for (let line of lines) {
@@ -336,8 +342,10 @@
             }
             val = newLines.join('\n');
 
+            // Apply modifications
             if (val !== this.value) {
                 this.value = val;
+                // Attempt to preserve cursor position after formatting
                 let newCursor = cursorPosition - (originalLength - val.length);
                 if(newCursor > this.value.length) newCursor = this.value.length;
                 this.setSelectionRange(newCursor, newCursor);
@@ -346,6 +354,7 @@
             charCount.innerText = `${this.value.length} / 300`;
         });
 
+        // Re-process image in real-time when sliders move
         const applyImageAdjustments = async () => {
             if (loadedImageElement) {
                 const brightness = parseInt(brightnessInput.value);
@@ -382,6 +391,7 @@
             fileNameDisplay.innerText = file.name;
             setStatus("Loading and applying dithering...", "processing");
 
+            // Load file into an Image object once for fast re-rendering
             const reader = new FileReader();
             reader.onload = (event) => {
                 const img = new Image();
@@ -400,6 +410,7 @@
             reader.readAsDataURL(file);
         });
 
+        // Custom encoder for Polish characters (CP852)
         function encodePolishToBytes(text) {
             const cp852Map = {
                 'ą': 0xA4, 'ć': 0x86, 'ę': 0xA9, 'ł': 0x88, 'ń': 0xE4, 'ó': 0xA2, 'ś': 0x98, 'ź': 0xAB, 'ż': 0xBE,
@@ -413,7 +424,7 @@
                     bytes.push(cp852Map[char]);
                 } else {
                     let code = text.charCodeAt(i);
-                    bytes.push(code > 255 ? 63 : code); 
+                    bytes.push(code > 255 ? 63 : code); // ? for unknown
                 }
             }
             return bytes;
@@ -450,42 +461,51 @@
 
                 let escpos = [];
                 
-                // Using .concat() instead of spread (...) prevents browser crashing on huge payloads
-                escpos = escpos.concat(CMD_INIT, CMD_CP852);
+                // 1. Initialize and set code page
+                escpos.push(...CMD_INIT, ...CMD_CP852);
 
-                const CMD_TEXT_BIG = [0x1B, 0x21, 0x30]; 
-                const CMD_TEXT_NORMAL = [0x1B, 0x21, 0x00]; 
+                // --- ADDED: BIG "FAX" HEADER ---
+                const CMD_TEXT_BIG = [0x1B, 0x21, 0x30]; // Double width & double height
+                const CMD_TEXT_NORMAL = [0x1B, 0x21, 0x00]; // Reset text size
                 
-                escpos = escpos.concat(CMD_ALIGN_CENTER);
-                escpos = escpos.concat(CMD_TEXT_BIG);
-                escpos = escpos.concat(encodePolishToBytes("FAX\n\n"));
-                escpos = escpos.concat(CMD_TEXT_NORMAL);
+                escpos.push(...CMD_ALIGN_CENTER);
+                escpos.push(...CMD_TEXT_BIG);
+                escpos.push(...encodePolishToBytes("FAX\n\n"));
+                escpos.push(...CMD_TEXT_NORMAL);
+                // -------------------------------
 
-                escpos = escpos.concat(CMD_ALIGN_CENTER);
-                escpos = escpos.concat(encodePolishToBytes(BORDER_LINE));
+                // 2. Top Border
+                escpos.push(...CMD_ALIGN_CENTER);
+                escpos.push(...encodePolishToBytes(BORDER_LINE));
                 
-                escpos = escpos.concat(CMD_ALIGN_LEFT);
-                escpos = escpos.concat(encodePolishToBytes(`WIADOMOŚĆ Z: ${getTimestamp()}\n\n`));
-                escpos = escpos.concat(encodePolishToBytes(`OD: ${userName}\n\n`));
+                // 3. Metadata
+                escpos.push(...CMD_ALIGN_LEFT);
+                escpos.push(...encodePolishToBytes(`WIADOMOŚĆ Z: ${getTimestamp()}\n\n`));
+                escpos.push(...encodePolishToBytes(`OD: ${userName}\n\n`));
 
+                // 4. Note Content
                 if (textNote) {
-                    escpos = escpos.concat(encodePolishToBytes(`TREŚĆ:\n`));
-                    escpos = escpos.concat(encodePolishToBytes(textNote + "\n\n"));
+                    escpos.push(...encodePolishToBytes(`TREŚĆ:\n`));
+                    escpos.push(...encodePolishToBytes(textNote + "\n\n"));
                 }
 
+                // 5. Image Content
                 if (cachedImageBytes) {
-                    escpos = escpos.concat(CMD_ALIGN_CENTER);
-                    escpos = escpos.concat(encodePolishToBytes(BORDER_LINE));
-                    escpos = escpos.concat(CMD_ALIGN_CENTER);
-                    escpos = escpos.concat(cachedImageBytes); // Push the entire RAM image payload
+                    escpos.push(...CMD_ALIGN_CENTER);
+                    escpos.push(...encodePolishToBytes(BORDER_LINE));
+                    escpos.push(...CMD_ALIGN_CENTER);
+                    escpos.push(...cachedImageBytes);
                 }
 
-                escpos = escpos.concat(CMD_ALIGN_CENTER);
-                escpos = escpos.concat(encodePolishToBytes(BORDER_LINE));
+                // 6. Bottom Border
+                escpos.push(...CMD_ALIGN_CENTER);
+                escpos.push(...encodePolishToBytes(BORDER_LINE));
 
-                escpos = escpos.concat([0x0A]);
-                escpos = escpos.concat(CMD_CUT_PAPER);
+                // 7. Feed paper and Cut
+                escpos.push(0x0A);
+                escpos.push(...CMD_CUT_PAPER);
 
+                // Convert to Base64
                 let binary = '';
                 const bytes = new Uint8Array(escpos);
                 for (let i = 0; i < bytes.byteLength; i++) {
@@ -495,12 +515,13 @@
 
                 setStatus("Transmitting to hardware...", "processing");
                 await set(ref(db, 'Print_Job'), {
-                    payload: base64Data,
-                    status: true  
+                payload: base64Data,
+                status: true  // Triggers the ESP32 stream callback
                 });
                 
                 setStatus("Sent successfully! Printer should start.", "success");
                 
+                // Clear UI
                 nameInput.value = '';
                 noteInput.value = '';
                 charCount.innerText = '0 / 300';
@@ -530,25 +551,35 @@
                 const imageData = ctx.getImageData(0, 0, printWidth, printHeight);
                 const pixels = imageData.data;
 
+                // Contrast algorithm factor
                 const contrastFactor = (259 * (contrastValue + 255)) / (255 * (259 - contrastValue));
-                const grayData = new Float32Array(printWidth * printHeight);
 
+                // 1. Convert to Grayscale Float array, applying Brightness & Contrast
+                const grayData = new Float32Array(printWidth * printHeight);
                 for (let i = 0; i < pixels.length; i += 4) {
+                    // Extract alpha to prevent transparent images turning black
                     const alpha = pixels[i+3] / 255;
                     
+                    // Blend pixel with white background based on transparency
                     const r = pixels[i] * alpha + 255 * (1 - alpha);
                     const g = pixels[i+1] * alpha + 255 * (1 - alpha);
                     const b = pixels[i+2] * alpha + 255 * (1 - alpha);
                     
                     let gray = (r + g + b) / 3;
                     
+                    // Apply Contrast
                     gray = contrastFactor * (gray - 128) + 128;
+                    
+                    // Apply Brightness
                     gray += brightnessOffset;
+                    
+                    // Clamp between 0 and 255
                     gray = Math.max(0, Math.min(255, gray));
                     
                     grayData[i/4] = gray;
                 }
 
+                // 2. Apply Floyd-Steinberg Dithering
                 for (let y = 0; y < printHeight; y++) {
                     for (let x = 0; x < printWidth; x++) {
                         let idx = y * printWidth + x;
@@ -565,51 +596,35 @@
                     }
                 }
 
-                // 3a. Update UI Canvas Pixels
+                // 3. Re-pack bytes for UI preview and Printer format
+                let imgEscpos = [0x1D, 0x76, 0x30, 0x00]; 
+                let xBytes = printWidth / 8;
+                imgEscpos.push(xBytes % 256, Math.floor(xBytes / 256)); 
+                imgEscpos.push(printHeight % 256, Math.floor(printHeight / 256));
+
                 for (let y = 0; y < printHeight; y++) {
-                    for (let x = 0; x < printWidth; x++) {
-                        let idx = (y * printWidth) + x;
-                        let color = grayData[idx]; 
-                        let pIdx = idx * 4;
-                        pixels[pIdx] = color;
-                        pixels[pIdx+1] = color;
-                        pixels[pIdx+2] = color;
-                        pixels[pIdx+3] = 255;
-                    }
-                }
-                ctx.putImageData(imageData, 0, 0);
-
-                // 3b. Re-pack bytes for Printer using GS * (Downloaded RAM image)
-                let xBytesCount = Math.floor(printWidth / 8); 
-                let yBytesCount = Math.ceil(printHeight / 8);
-                
-                // Safety cap: Ensure tall images don't exceed standard vertical byte limits
-                if (yBytesCount > 255) yBytesCount = 255; 
-
-                let imgEscpos = [0x1D, 0x2A, xBytesCount, yBytesCount]; // GS * command
-
-                // GS * requires data in column-major order (left-to-right columns, top-to-bottom bytes)
-                for (let col = 0; col < printWidth; col++) {
-                    for (let yByte = 0; yByte < yBytesCount; yByte++) {
+                    for (let x = 0; x < printWidth; x += 8) {
                         let byte = 0;
                         for (let bit = 0; bit < 8; bit++) {
-                            let row = (yByte * 8) + bit;
-                            if (row < printHeight) {
-                                let idx = (row * printWidth) + col;
-                                let color = grayData[idx]; 
-                                
-                                if (color === 0) { // Black pixel
-                                    byte |= (1 << (7 - bit));
-                                }
+                            let idx = (y * printWidth) + (x + bit);
+                            let color = grayData[idx]; 
+                            
+                            // Update canvas pixels
+                            let pIdx = idx * 4;
+                            pixels[pIdx] = color;
+                            pixels[pIdx+1] = color;
+                            pixels[pIdx+2] = color;
+                            pixels[pIdx+3] = 255;
+                            
+                            if (color === 0) {
+                                byte |= (1 << (7 - bit));
                             }
                         }
                         imgEscpos.push(byte);
                     }
                 }
-
-                // Append Print Downloaded RAM Image Command: GS / 0 (Normal size)
-                imgEscpos.push(0x1D, 0x2F, 0x00);
-
+                
+                ctx.putImageData(imageData, 0, 0);
                 resolve(imgEscpos);
             });
         }
